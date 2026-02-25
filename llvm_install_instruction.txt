@@ -1,0 +1,6 @@
+This is the instruction set I used to install llvm:
+First I cloned the repo and then ran this command:
+> cmake ..\llvm -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_ASSERTIONS=ON         
+> ninja -j 6
+
+I have python on my system, please check the version and the compatibility with the modules and then create and use a venv. Also please create a gitignore and populate with all the relevant filepaths.

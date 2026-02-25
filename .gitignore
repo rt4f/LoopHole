@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.eggs/
+*.egg-link
+.installed.cfg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+POC_initial_demo/.venv/
+
+# Pytest
+.pytest_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+nosetests.xml
+test-results/
+
+# IDEs
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# LLVM / MLIR build artifacts
+llvm-project/
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.pdb
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+
+# Output files
+*.mlir.out
+lifted_*.mlir
+*.log
+reports/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Z3 / SMT
+*.smt2
+*.smt2.out
+
+# Benchmark outputs
+polybench_results/
+benchmark_*.json
+benchmark_*.csv
