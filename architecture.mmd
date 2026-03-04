@@ -1,0 +1,51 @@
+flowchart TD
+    Engineer(["👤 Compiler / HPC Engineer"])
+    Polygeist["Polygeist\nC / C++ / Fortran → MLIR Affine IR Frontend"]
+
+    Engineer -- "legacy C/C++/Fortran source" --> Polygeist
+    Polygeist -- "MLIR Affine IR text" --> CLI
+    Engineer -- "Affine IR direct" --> CLI
+
+    subgraph LoopHole["LoopHole — Python Package"]
+        CLI["CLI  ·  Click / Rich\nlift · batch · demo · verify · sketches"]
+
+        subgraph Lifting["Synthesis Pipeline  —  loophole.lifter"]
+            AE["Affine Extractor\nParse Affine IR → LoopNestInfo\nbounds · IV roles · access patterns · compute ops"]
+            SK["Sketch Library\n26 OperationSketches  (Linalg + StableHLO)\niterator types · indexing maps · compute payload"]
+            ST["SymPy Tracer\nBuild algebraic body expression tree\nScore each sketch on 6 criteria → confidence 0–1"]
+            Z3C["Z3 Equivalence Checker\nForAll source + sketch assertions\nBidirectional SMT proof  →  EQUIVALENT / TIMEOUT"]
+            LE["Linalg Emitter\nmatmul · dot · matvec · transpose\nconv1d · conv2d · pool2d · reduce · map · generic"]
+            SE["StableHLO Emitter\ndot_general · convolution · reduce"]
+        end
+
+        CLI -- "mlir_text" --> AE
+        AE -- "LoopNestInfo" --> ST
+        ST -. "iterates + scores" .-> SK
+        ST -- "top-k ranked sketches" --> Z3C
+        Z3C -- "winning Linalg sketch" --> LE
+        Z3C -- "winning StableHLO sketch" --> SE
+    end
+
+    subgraph ExtTools["External Reasoning Tools"]
+        Z3Ext["Z3 SMT Solver\nz3-solver ≥ 4.12"]
+        SympyExt["SymPy ≥ 1.12\nSymbolic algebra engine"]
+    end
+
+    Z3C -. "SMT assertions" .-> Z3Ext
+    ST -. "symbolic ops" .-> SympyExt
+
+    subgraph Downstream["Downstream Compilers"]
+        XLA["XLA Compiler\nGoogle TPU v3 / v4"]
+        IREE["IREE Compiler\nNVIDIA GPU · ARM SVE"]
+        LLVM["LLVM Backend\nIntel / AMD CPU  (AVX2 / AVX-512)"]
+    end
+
+    SE -- "StableHLO MLIR" --> XLA
+    LE -- "Linalg MLIR" --> IREE
+    LE -- "Linalg MLIR" --> LLVM
+
+    XLA --> Result
+    IREE --> Result
+    LLVM --> Result
+
+    Result[["Optimised Binary\nTPU · GPU · CPU"]]
