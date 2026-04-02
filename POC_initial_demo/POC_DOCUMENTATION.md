@@ -5,6 +5,15 @@
 > and exactly how every piece of code works — from the first line of input to the
 > last line of output.
 
+## Implementation Update (March 2026)
+
+- The Affine extractor no longer uses regex-based parsing.
+- Parsing now uses deterministic token scanning, with optional syntax validation through MLIR Python bindings when available.
+- A Dockerized Polygeist+MLIR toolchain is now included under `docker/` for reproducible C/C++ to MLIR compilation.
+- A new `loophole compile` command provides step 1 of a two-step workflow:
+  1. Compile C/C++ into MLIR.
+  2. Lift generated MLIR with `loophole lift`.
+
 ---
 
 ## Table of Contents

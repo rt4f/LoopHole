@@ -18,12 +18,16 @@ Once lifted, these programs can be passed to domain-specific ML compilers (XLA, 
 
 | Document | Description |
 |---|---|
-| [01 — Project Overview](./01_project_overview.md) | Goals, motivation, problem scope, and success criteria |
-| [02 — State of the Art](./02_state_of_the_art.md) | Comprehensive survey of all relevant SOTA frameworks, benchmarks, and limitations (mlirSynth, Tenspiler, Tensorize, STAGG, QiMeng-Xpiler, and more) |
-| [03 — MLIR Architecture Deep Dive](./03_mlir_architecture.md) | Technical reference for the MLIR infrastructure, dialects used (Affine, SCF, Linalg, StableHLO, SparseTensor, Transform), and the compilation pipeline |
-| [04 — Implementation Roadmap](./04_implementation_roadmap.md) | Step-by-step phased build plan: 3-month POC, 6-month extension, and long-term research phases with concrete deliverables |
-| [05 — Novel Research Directions](./05_novel_research_directions.md) | Unexplored frontiers: sparse tensor synthesis, Transform dialect scheduling, dynamic shape inference, and auto-documentation |
-| [06 — References & Resources](./06_references.md) | All papers, repositories, tools, benchmarks, and links cited throughout this documentation |
+| [01 — Project Overview](./docs/01_project_overview.md) | Goals, motivation, problem scope, and success criteria |
+| [02 — State of the Art](./docs/02_state_of_the_art.md) | Comprehensive survey of all relevant SOTA frameworks, benchmarks, and limitations (mlirSynth, Tenspiler, Tensorize, STAGG, QiMeng-Xpiler, and more) |
+| [03 — MLIR Architecture Deep Dive](./docs/03_mlir_architecture.md) | Technical reference for the MLIR infrastructure, dialects used (Affine, SCF, Linalg, StableHLO, SparseTensor, Transform), and the compilation pipeline |
+| [04 — Implementation Roadmap](./docs/04_implementation_roadmap.md) | Step-by-step phased build plan: 3-month POC, 6-month extension, and long-term research phases with concrete deliverables |
+| [05 — Novel Research Directions](./docs/05_novel_research_directions.md) | Unexplored frontiers: sparse tensor synthesis, Transform dialect scheduling, dynamic shape inference, and auto-documentation |
+| [06 — References & Resources](./docs/06_references.md) | All papers, repositories, tools, benchmarks, and links cited throughout this documentation |
+| [07 — POC Implementation Audit](./docs/07_poc_implementation_audit.md) | Ground-truth implementation status, limitations, hardcoding/stubs inventory, and prioritized fix plan |
+| [08 — Three-Person Parallel Execution Plan](./docs/08_three_person_parallel_execution_plan.md) | Execution-ready task graph for three contributors with dependencies, checkpoints, and metrics |
+| [09 — Docker/Polygeist Delivery Handoff](./docs/09_docker_polygeist_delivery_handoff.md) | Full change log, validation evidence, drawbacks, limitations, and distribution plan for prebuilt images |
+| [POC Docker Polygeist Quickstart](./POC_initial_demo/docker/README.md) | Reproducible Polygeist+MLIR container with two-step C/C++ compile-then-lift workflow |
 
 ---
 

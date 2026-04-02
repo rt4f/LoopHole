@@ -2,6 +2,7 @@
 cli.py — Command-line interface for LoopHole.
 
 Commands:
+    loophole compile -- Compile C/C++ into MLIR Affine/SCF form (Polygeist)
   loophole lift    -- Lift a single MLIR Affine IR file to tensor dialect
   loophole verify  -- Only run formal verification, skip emit
   loophole batch   -- Lift all .mlir files in a directory
@@ -19,10 +20,12 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import click
 from rich.console import Console
@@ -53,6 +56,168 @@ def main():
     high-level Linalg or StableHLO operations.
     """
     pass
+
+
+def _default_frontend_for_file(source_path: Path) -> str:
+    cxx_exts = {".cc", ".cpp", ".cxx", ".c++", ".cp"}
+    return "cgeist++" if source_path.suffix.lower() in cxx_exts else "cgeist"
+
+
+def _common_mount_root(paths: List[Path]) -> Path:
+    try:
+        root = Path(os.path.commonpath([str(p.resolve()) for p in paths]))
+    except ValueError as exc:
+        raise click.ClickException(
+            "Input and output paths must be on the same drive for Docker volume mounting."
+        ) from exc
+    if not root.exists():
+        raise click.ClickException(f"Computed mount root does not exist: {root}")
+    return root
+
+
+def _to_container_relpath(path: Path, mount_root: Path) -> str:
+    try:
+        rel = path.resolve().relative_to(mount_root.resolve())
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Path '{path}' is not under mount root '{mount_root}'."
+        ) from exc
+    return rel.as_posix()
+
+
+def _build_docker_compile_script(
+    frontend: str,
+    source_rel: str,
+    output_rel: str,
+    std: Optional[str],
+    raise_to_affine: bool,
+) -> str:
+    source_in = f"/workspace/{source_rel}"
+    output_out = f"/workspace/{output_rel}"
+
+    args = [
+        frontend,
+        source_in,
+        "-S",
+        "--function=*",
+        "--memref-fullrank",
+    ]
+    if raise_to_affine:
+        args.append("-raise-scf-to-affine")
+    if std:
+        args.append(f"-std={std}")
+
+    compile_cmd = " ".join(shlex.quote(arg) for arg in args)
+    # Polygeist can emit legacy dynamic dims as -1 (for example memref<-1xi32>);
+    # normalize to modern MLIR '?' form so mlir-opt can parse it.
+    normalize_dynamic_dims_cmd = "sed -E 's/(<|x)-1([x>])/\\1?\\2/g'"
+    mlir_opt_cmd = f"mlir-opt --canonicalize > {shlex.quote(output_out)}"
+    return f"set -euo pipefail; {compile_cmd} | {normalize_dynamic_dims_cmd} | {mlir_opt_cmd}"
+
+
+# ---------------------------------------------------------------------------
+# loophole compile
+# ---------------------------------------------------------------------------
+
+@main.command(name="compile")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
+              help="Output MLIR file path (default: <source_stem>.mlir)")
+@click.option("--docker-image", default="loophole-polygeist:llvm17", show_default=True,
+              help="Docker image containing cgeist/cgeist++ and mlir-opt")
+@click.option("--std", default=None,
+              help="Language standard passed to Polygeist frontend (for example c11 or c++17)")
+@click.option("--frontend-binary", default=None,
+              help="Override frontend binary (default: cgeist for C, cgeist++ for C++)")
+@click.option("--no-affine-raise", is_flag=True,
+              help="Do not pass -raise-scf-to-affine to Polygeist")
+@click.option("--print-command", is_flag=True,
+              help="Print the docker command before execution")
+def compile_cmd(
+    source_file: Path,
+    output: Optional[Path],
+    docker_image: str,
+    std: Optional[str],
+    frontend_binary: Optional[str],
+    no_affine_raise: bool,
+    print_command: bool,
+):
+    """
+    Compile C/C++ source into MLIR using Polygeist inside Docker.
+
+    This is step 1 of the two-step flow:
+      1) loophole compile kernel.c -o kernel.mlir
+      2) loophole lift kernel.mlir
+    """
+    source_path = source_file.resolve()
+    output_path = output.resolve() if output else source_path.with_suffix(".mlir")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    frontend = frontend_binary or _default_frontend_for_file(source_path)
+    mount_root = _common_mount_root([source_path, output_path])
+    source_rel = _to_container_relpath(source_path, mount_root)
+    output_rel = _to_container_relpath(output_path, mount_root)
+
+    script = _build_docker_compile_script(
+        frontend=frontend,
+        source_rel=source_rel,
+        output_rel=output_rel,
+        std=std,
+        raise_to_affine=not no_affine_raise,
+    )
+
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{mount_root}:/workspace",
+        docker_image,
+        "bash",
+        "-lc",
+        script,
+    ]
+
+    if print_command:
+        console.print("[dim]Docker command:[/dim]")
+        console.print("[dim]" + " ".join(shlex.quote(part) for part in docker_cmd) + "[/dim]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console,
+    ) as progress:
+        task = progress.add_task(f"[cyan]Compiling {source_path.name} with Polygeist...", total=None)
+        proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+        progress.advance(task)
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        details = stderr or stdout or "No error details reported by docker run."
+        raise click.ClickException(
+            "Polygeist compile failed.\n"
+            f"Frontend: {frontend}\n"
+            f"Image: {docker_image}\n"
+            f"Command script: {script}\n\n"
+            f"Details:\n{details}"
+        )
+
+    console.print(
+        Panel(
+            "\n".join([
+                "[green bold]COMPILE SUCCEEDED[/green bold]",
+                f"  Source       : [cyan]{source_path}[/cyan]",
+                f"  Output MLIR  : [magenta]{output_path}[/magenta]",
+                f"  Frontend     : {frontend}",
+                f"  Docker image : {docker_image}",
+            ]),
+            title="LoopHole Compile Result",
+            border_style="green",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

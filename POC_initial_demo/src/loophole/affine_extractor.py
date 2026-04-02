@@ -1,77 +1,66 @@
 """
-affine_extractor.py — Parse MLIR Affine IR text into LoopNestInfo data structures.
+affine_extractor.py — Parse MLIR Affine/SCF loop nests into LoopNestInfo.
 
-This module implements a hand-rolled recursive descent parser for a substantial
-subset of the MLIR textual format, focused on the Affine, SCF, Arith, and MemRef
-dialects that Polygeist produces as output.
-
-Supported constructs:
-  - func.func declarations with memref arguments
-  - affine.for loops with integer-constant or symbolic bounds
-  - affine.load / affine.store with affine map subscripts
-  - arith.mulf, arith.addf, arith.subf, arith.divf, arith.maxf, arith.minf,
-    arith.constant, arith.negf, arith.cmpf, arith.maxnumf, arith.minnumf
-  - arith.extf, arith.truncf (float conversions, ignored for semantics)
-  - scf.for as fallback loop representation
-  - memref.load / memref.store (non-affine fallback)
+This parser is intentionally implemented without regex-based extraction.
+It uses deterministic token scanning and optional MLIR syntax validation via
+MLIR Python bindings when they are available in the runtime environment.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
+try:
+    from mlir import ir as _mlir_ir
+except Exception:
+    _mlir_ir = None
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class AccessPattern:
     """Describes a single memref read or write with its subscript expression."""
-    tensor_name: str                 # e.g., '%A'
-    index_exprs: List[str]           # e.g., ['%i', '%k'] or ['%i + %p', '%j + %q']
-    is_affine: bool                  # True if all indices are affine in loop IVs
-    is_read: bool                    # False → write
-    shape: List[int]                 # concrete dims from memref<MxNxf32>
-    element_type: str                # 'f32' | 'f64' | 'i32' | 'i64'
-    ssa_name: str                    # SSA result name for reads (e.g. '%val0')
+
+    tensor_name: str
+    index_exprs: List[str]
+    is_affine: bool
+    is_read: bool
+    shape: List[int]
+    element_type: str
+    ssa_name: str
 
 
 @dataclass
 class ComputeOp:
     """A single arithmetic operation in the loop body."""
-    op_type: str                     # e.g., 'mulf', 'addf', 'constant'
-    operands: List[str]              # SSA names of operand values
-    result: str                      # SSA name of the result
-    value: Optional[float] = None    # For arith.constant
+
+    op_type: str
+    operands: List[str]
+    result: str
+    value: Optional[float] = None
 
 
 @dataclass
 class LoopNestInfo:
-    """
-    Full semantic description of an extracted affine loop nest.
+    """Full semantic description of an extracted loop nest."""
 
-    This is the central data structure passed between all pipeline stages.
-    """
-    func_name: str                             # e.g., 'matmul'
-    induction_vars: List[str]                  # ordered outermost→innermost: ['i','j','k']
-    bounds: Dict[str, Tuple[Union[int,str], Union[int,str]]]  # {'i': (0, 128), ...}
-    loop_order: List[str]                      # same as induction_vars, for clarity
+    func_name: str
+    induction_vars: List[str]
+    bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]]
+    loop_order: List[str]
     reads: List[AccessPattern]
     writes: List[AccessPattern]
     compute_ops: List[ComputeOp]
-    tensor_shapes: Dict[str, List[int]]        # {'%A': [128, 128], ...}
-    tensor_types: Dict[str, str]               # {'%A': 'f32', ...}
-    element_type: str                          # dominant element type
-    reduction_vars: List[str]                  # IVs not appearing in output subscript
-    parallel_vars: List[str]                   # IVs that DO appear in output subscript
-    func_args: Dict[str, str]                  # {arg_name: mlir_type}
-    has_accumulation: bool                     # whether body includes += style update
-    accumulation_op: Optional[str]             # 'addf' | 'addi' for the += op
+    tensor_shapes: Dict[str, List[int]]
+    tensor_types: Dict[str, str]
+    element_type: str
+    reduction_vars: List[str]
+    parallel_vars: List[str]
+    func_args: Dict[str, str]
+    has_accumulation: bool
+    accumulation_op: Optional[str]
 
-    # convenience: quick access to the single write tensor name
     @property
     def output_tensor(self) -> Optional[str]:
         if self.writes:
@@ -84,144 +73,198 @@ class LoopNestInfo:
         return [r.tensor_name for r in self.reads if r.tensor_name != out]
 
 
-# ---------------------------------------------------------------------------
-# Regex patterns (pre-compiled for performance)
-# ---------------------------------------------------------------------------
+def _split_top_level(text: str, delimiter: str = ",") -> List[str]:
+    """Split by delimiter while respecting nested (), [], <> depth."""
+    parts: List[str] = []
+    buf: List[str] = []
+    depth_paren = 0
+    depth_bracket = 0
+    depth_angle = 0
 
-_RE_FUNC = re.compile(
-    r'func\.func\s+@(\w+)\s*\(([^)]*)\)',
-    re.MULTILINE
-)
-_RE_AFFINE_FOR = re.compile(
-    r'affine\.for\s+(%\w+)\s*=\s*([\w%]+)\s+to\s+([\w%]+)(?:\s+step\s+(\d+))?',
-)
-_RE_SCF_FOR = re.compile(
-    r'scf\.for\s+(%\w+)\s*=\s*(%\w+|[-\d]+)\s+to\s+(%\w+|[-\d]+)\s+step\s+(%\w+|[-\d]+)',
-)
-_RE_AFFINE_LOAD = re.compile(
-    r'(%\w+)\s*=\s*affine\.load\s+(%\w+)\[([^\]]*)\]\s*:\s*memref<([^>]+)>',
-)
-_RE_AFFINE_STORE = re.compile(
-    r'affine\.store\s+(%\w+),\s*(%\w+)\[([^\]]*)\]\s*:\s*memref<([^>]+)>',
-)
-_RE_MEMREF_LOAD = re.compile(
-    r'(%\w+)\s*=\s*memref\.load\s+(%\w+)\[([^\]]*)\]\s*:\s*memref<([^>]+)>',
-)
-_RE_MEMREF_STORE = re.compile(
-    r'memref\.store\s+(%\w+),\s*(%\w+)\[([^\]]*)\]\s*:\s*memref<([^>]+)>',
-)
-_RE_ARITH_BINOP = re.compile(
-    r'(%\w+)\s*=\s*arith\.(mulf|addf|subf|divf|maxf|minf|maxnumf|minnumf|'
-    r'muli|addi|subi|divi_signed|mulf|mulsi)\s+(%\w+),\s*(%\w+)\s*:\s*\S+',
-)
-_RE_ARITH_CONST = re.compile(
-    r'(%\w+)\s*=\s*arith\.constant\s+([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*:\s*\S+',
-)
-_RE_ARITH_NEGF = re.compile(
-    r'(%\w+)\s*=\s*arith\.negf\s+(%\w+)\s*:\s*\S+',
-)
-_RE_MEMREF_TYPE = re.compile(
-    r'memref<([\dx]+x(?:f32|f64|i32|i64|bf16|f16))>',
-)
-_RE_CONST_INT = re.compile(
-    r'(%\w+)\s*=\s*arith\.constant\s+(\d+)\s*:\s*index',
-)
+    for ch in text:
+        if ch == "(":
+            depth_paren += 1
+        elif ch == ")" and depth_paren > 0:
+            depth_paren -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]" and depth_bracket > 0:
+            depth_bracket -= 1
+        elif ch == "<":
+            depth_angle += 1
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
+
+        if (
+            ch == delimiter
+            and depth_paren == 0
+            and depth_bracket == 0
+            and depth_angle == 0
+        ):
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+            continue
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _strip_inline_comment(line: str) -> str:
+    idx = line.find("//")
+    if idx >= 0:
+        return line[:idx].rstrip()
+    return line.rstrip()
+
+
+def _find_matching(text: str, open_idx: int, open_ch: str, close_ch: str) -> int:
+    """Find the matching close char index for the opener at open_idx."""
+    if open_idx < 0 or open_idx >= len(text) or text[open_idx] != open_ch:
+        return -1
+    depth = 0
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch in {"_", "%"}
+
+
+def _replace_token_boundary(expr: str, old: str, new: str) -> str:
+    """Replace old token with new only at identifier boundaries."""
+    if not old:
+        return expr
+
+    out: List[str] = []
+    i = 0
+    n = len(expr)
+    m = len(old)
+    while i < n:
+        if expr.startswith(old, i):
+            prev = expr[i - 1] if i > 0 else ""
+            nxt = expr[i + m] if i + m < n else ""
+            if (not prev or not _is_ident_char(prev)) and (not nxt or not _is_ident_char(nxt)):
+                out.append(new)
+                i += m
+                continue
+        out.append(expr[i])
+        i += 1
+    return "".join(out)
+
+
+def _strip_ssa_percent(expr: str) -> str:
+    """Convert %foo tokens to foo for downstream symbolic consumers."""
+    out: List[str] = []
+    i = 0
+    n = len(expr)
+    while i < n:
+        if expr[i] == "%" and i + 1 < n and (expr[i + 1].isalnum() or expr[i + 1] == "_"):
+            i += 1
+            continue
+        out.append(expr[i])
+        i += 1
+    return "".join(out)
+
+
+def _extract_memref_payload(type_str: str) -> Optional[str]:
+    idx = type_str.find("memref<")
+    if idx < 0:
+        return None
+    start = idx + len("memref<")
+    depth = 1
+    for i in range(start, len(type_str)):
+        ch = type_str[i]
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+            if depth == 0:
+                return type_str[start:i]
+    return None
 
 
 def _parse_memref_type(type_str: str) -> Tuple[List[int], str]:
     """
-    Parse 'MxNxf32' from a memref<MxNxf32> type string.
-    Returns (shape, element_type).  '?' becomes -1.
+    Parse memref<MxNxf32> like syntax into (shape, elem_type).
+    Unknown/dynamic dimensions are represented as -1.
     """
-    # Strip 'memref<' and '>' if present
-    type_str = type_str.strip()
-    if type_str.startswith('memref<'):
-        type_str = type_str[7:]
-    if type_str.endswith('>'):
-        type_str = type_str[:-1]
-    parts = type_str.split('x')
+    raw = type_str.strip()
+    payload = _extract_memref_payload(raw)
+    if payload is None:
+        payload = raw
+
+    # Strip layout/affine details if present.
+    main = payload.split(",", 1)[0].strip()
+    if "x" not in main:
+        return [], main or "f32"
+
+    parts = [p.strip() for p in main.split("x") if p.strip()]
+    if not parts:
+        return [], "f32"
+
     elem_type = parts[-1]
-    shape = []
-    for p in parts[:-1]:
-        if p == '?':
+    shape_tokens = parts[:-1]
+    shape: List[int] = []
+    for token in shape_tokens:
+        if token == "?":
             shape.append(-1)
-        else:
-            try:
-                shape.append(int(p))
-            except ValueError:
-                shape.append(-1)
+            continue
+        try:
+            shape.append(int(token, 10))
+        except ValueError:
+            shape.append(-1)
     return shape, elem_type
 
 
 def _normalize_index(idx: str, iv_map: Dict[str, str]) -> str:
-    """
-    Normalize an affine subscript expression: replace full SSA names
-    with short induction variable names, collapse whitespace.
-    """
-    result = idx.strip()
-    # Replace SSA iv names with short names
-    for ssa_name, short_name in iv_map.items():
-        result = result.replace(ssa_name, short_name)
-    return result
+    expr = idx.strip()
+    for ssa_name, short_name in sorted(iv_map.items(), key=lambda item: len(item[0]), reverse=True):
+        expr = _replace_token_boundary(expr, ssa_name, short_name)
+    expr = _strip_ssa_percent(expr)
+    return " ".join(expr.split())
 
-
-# ---------------------------------------------------------------------------
-# Main extractor class
-# ---------------------------------------------------------------------------
 
 class AffineExtractor:
     """
-    Parses MLIR Affine/SCF IR in textual format and extracts LoopNestInfo.
+    Parse MLIR Affine/SCF IR text and extract LoopNestInfo.
 
-    Usage:
-        extractor = AffineExtractor()
-        info = extractor.extract(mlir_text)
+    The extractor avoids regex parsing. If MLIR Python bindings are available,
+    syntax is validated through the MLIR parser before extraction.
     """
 
+    def __init__(self, validate_with_mlir: bool = True):
+        self.validate_with_mlir = validate_with_mlir
+
     def extract(self, mlir_text: str) -> LoopNestInfo:
-        """
-        Main entry point.  Takes an MLIR module or function as a string,
-        returns a LoopNestInfo describing the first (or only) func.func.
+        text = mlir_text.replace("\r\n", "\n").replace("\r", "\n")
 
-        Raises ValueError if the text does not contain a parseable loop nest.
-        """
-        # Normalize line endings
-        text = mlir_text.replace('\r\n', '\n').replace('\r', '\n')
+        self._validate_mlir_syntax(text)
 
-        # 1. Find the function declaration
         func_name, func_args = self._parse_func_declaration(text)
-
-        # 2. Extract constant definitions (for bounds that use %c0, %cN etc.)
         const_map = self._extract_constants(text)
-
-        # 3. Parse all loop levels
-        induction_vars, bounds_raw, loop_order = self._parse_loop_structure(text, const_map)
-
-        # 4. Collect all memory accesses
-        reads, writes = self._collect_accesses(text, induction_vars)
-
-        # 5. Collect arithmetic ops
+        induction_vars, bounds_raw, loop_order, iv_map = self._parse_loop_structure(text)
+        reads, writes = self._collect_accesses(text, iv_map)
         compute_ops = self._collect_compute_ops(text)
-
-        # 6. Resolve tensor shapes and types from func args and access sites
         tensor_shapes, tensor_types = self._resolve_tensor_metadata(func_args, reads, writes)
-
-        # 7. Determine dominant element type
         element_type = self._dominant_element_type(tensor_types)
-
-        # 8. Classify induction variables as parallel or reduction
-        reduction_vars, parallel_vars = self._classify_iv_roles(
-            induction_vars, writes
-        )
-
-        # 9. Detect accumulation pattern
+        reduction_vars, parallel_vars = self._classify_iv_roles(induction_vars, writes)
         has_accum, accum_op = self._detect_accumulation(compute_ops, reads, writes)
 
-        # Resolve symbolic bounds
-        bounds = {}
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]] = {}
         for iv, (lo, hi) in bounds_raw.items():
-            lo_r = self._resolve_bound(lo, tensor_shapes, func_args, const_map)
-            hi_r = self._resolve_bound(hi, tensor_shapes, func_args, const_map)
+            lo_r = self._resolve_bound(lo, const_map)
+            hi_r = self._resolve_bound(hi, const_map)
             bounds[iv] = (lo_r, hi_r)
 
         return LoopNestInfo(
@@ -242,199 +285,351 @@ class AffineExtractor:
             accumulation_op=accum_op,
         )
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    def _validate_mlir_syntax(self, text: str) -> None:
+        if not self.validate_with_mlir or _mlir_ir is None:
+            return
+
+        candidates = [text]
+        if "module" not in text:
+            candidates.append(f"module {{\n{text}\n}}")
+
+        last_error: Optional[Exception] = None
+        for candidate in candidates:
+            try:
+                with _mlir_ir.Context() as ctx:
+                    ctx.allow_unregistered_dialects = True
+                    _mlir_ir.Module.parse(candidate)
+                return
+            except Exception as exc:
+                last_error = exc
+
+        raise ValueError(f"MLIR syntax validation failed: {last_error}")
+
+    def _iter_clean_lines(self, text: str) -> List[str]:
+        lines: List[str] = []
+        for raw in text.split("\n"):
+            line = _strip_inline_comment(raw).strip()
+            if line:
+                lines.append(line)
+        return lines
 
     def _parse_func_declaration(self, text: str) -> Tuple[str, Dict[str, str]]:
-        """Return (func_name, {arg_name: mlir_type})."""
-        m = _RE_FUNC.search(text)
-        if not m:
-            # Bare function body without func.func declaration — use placeholder
+        marker = "func.func @"
+        idx = text.find(marker)
+        if idx < 0:
             return "unknown", {}
-        func_name = m.group(1)
-        args_str = m.group(2)
+
+        name_start = idx + len(marker)
+        name_end = text.find("(", name_start)
+        if name_end < 0:
+            return "unknown", {}
+
+        func_name = text[name_start:name_end].strip().split()[0]
+        args_end = _find_matching(text, name_end, "(", ")")
+        if args_end < 0:
+            return func_name, {}
+
+        args_str = text[name_end + 1:args_end].strip()
         func_args: Dict[str, str] = {}
-        if args_str.strip():
-            for arg_segment in args_str.split(','):
-                arg_segment = arg_segment.strip()
-                colon_pos = arg_segment.find(':')
-                if colon_pos < 0:
-                    continue
-                arg_name = arg_segment[:colon_pos].strip()
-                arg_type = arg_segment[colon_pos + 1:].strip()
+        if not args_str:
+            return func_name, func_args
+
+        for segment in _split_top_level(args_str, ","):
+            if ":" not in segment:
+                continue
+            arg_name, arg_type = segment.split(":", 1)
+            arg_name = arg_name.strip()
+            arg_type = arg_type.strip()
+            if arg_name:
                 func_args[arg_name] = arg_type
+
         return func_name, func_args
 
     def _extract_constants(self, text: str) -> Dict[str, Union[int, float]]:
-        """Build a map from SSA constant name to its integer/float value."""
         const_map: Dict[str, Union[int, float]] = {}
-        for m in _RE_CONST_INT.finditer(text):
-            const_map[m.group(1)] = int(m.group(2))
-        for m in _RE_ARITH_CONST.finditer(text):
+        for line in self._iter_clean_lines(text):
+            if "=" not in line or "arith.constant" not in line:
+                continue
+
+            lhs, rhs = line.split("=", 1)
+            ssa_name = lhs.strip()
+            rhs = rhs.strip()
+            marker = "arith.constant"
+            marker_idx = rhs.find(marker)
+            if marker_idx < 0:
+                continue
+
+            literal_part = rhs[marker_idx + len(marker):].strip()
+            literal = literal_part.split(":", 1)[0].strip()
+            if not literal or literal.startswith("dense<"):
+                continue
+
             try:
-                const_map[m.group(1)] = float(m.group(2))
+                if any(ch in literal for ch in (".", "e", "E")):
+                    const_map[ssa_name] = float(literal)
+                else:
+                    const_map[ssa_name] = int(literal, 10)
             except ValueError:
-                pass
-        # Common constant patterns like %c0 = arith.constant 0 : index
-        pat2 = re.compile(r'(%\w+)\s*=\s*arith\.constant\s+(\d+)\s*:\s*(?:i\d+|index)')
-        for m in pat2.finditer(text):
-            const_map[m.group(1)] = int(m.group(2))
+                continue
+
         return const_map
+
+    def _allocate_iv_name(self, iv_ssa: str, used: List[str]) -> str:
+        base = iv_ssa.strip().lstrip("%")
+        if not base or not base[0].isalpha():
+            base = f"iv{len(used)}"
+
+        name = base
+        suffix = 0
+        while name in used:
+            suffix += 1
+            name = f"{base}_{suffix}"
+        return name
+
+    def _parse_affine_for(self, line: str) -> Optional[Tuple[str, str, str]]:
+        if not line.startswith("affine.for "):
+            return None
+        body = line[len("affine.for "):].strip()
+        if "=" not in body or " to " not in body:
+            return None
+
+        iv_ssa, rhs = body.split("=", 1)
+        iv_ssa = iv_ssa.strip()
+
+        lb_part, ub_part = rhs.split(" to ", 1)
+        lb = lb_part.strip()
+        ub = ub_part.strip()
+
+        if " step " in ub:
+            ub = ub.split(" step ", 1)[0].strip()
+        if ub.endswith("{"):
+            ub = ub[:-1].strip()
+
+        return iv_ssa, lb, ub
+
+    def _parse_scf_for(self, line: str) -> Optional[Tuple[str, str, str]]:
+        if not line.startswith("scf.for "):
+            return None
+        body = line[len("scf.for "):].strip()
+        if "=" not in body or " to " not in body:
+            return None
+
+        iv_ssa, rhs = body.split("=", 1)
+        iv_ssa = iv_ssa.strip()
+
+        lb_part, ub_and_step = rhs.split(" to ", 1)
+        lb = lb_part.strip()
+        ub = ub_and_step.strip()
+        if " step " in ub:
+            ub = ub.split(" step ", 1)[0].strip()
+        if ub.endswith("{"):
+            ub = ub[:-1].strip()
+
+        return iv_ssa, lb, ub
 
     def _parse_loop_structure(
         self,
         text: str,
-        const_map: Dict[str, Union[int, float]],
-    ) -> Tuple[List[str], Dict[str, Tuple], List[str]]:
-        """
-        Extract all induction variables, their bounds, and loop order.
-        Returns (induction_vars_ordered, raw_bounds_dict, loop_order).
-        """
+    ) -> Tuple[List[str], Dict[str, Tuple[str, str]], List[str], Dict[str, str]]:
         induction_vars: List[str] = []
-        bounds_raw: Dict[str, Tuple] = {}
+        bounds_raw: Dict[str, Tuple[str, str]] = {}
         loop_order: List[str] = []
+        iv_map: Dict[str, str] = {}
 
-        # Try affine.for first
-        for m in _RE_AFFINE_FOR.finditer(text):
-            iv = m.group(1)          # e.g. '%i'
-            lb = m.group(2)          # lower bound literal or SSA
-            ub = m.group(3)          # upper bound literal or SSA
-            short = iv.lstrip('%')
+        for line in self._iter_clean_lines(text):
+            parsed = self._parse_affine_for(line)
+            if parsed is None and not induction_vars:
+                parsed = self._parse_scf_for(line)
+            if parsed is None:
+                continue
+
+            iv_ssa, lb, ub = parsed
+            short = self._allocate_iv_name(iv_ssa, induction_vars)
             induction_vars.append(short)
             loop_order.append(short)
             bounds_raw[short] = (lb, ub)
+            iv_map[iv_ssa] = short
 
-        # Fallback to scf.for
-        if not induction_vars:
-            for m in _RE_SCF_FOR.finditer(text):
-                iv = m.group(1)
-                lb = m.group(2)
-                ub = m.group(3)
-                short = iv.lstrip('%')
-                induction_vars.append(short)
-                loop_order.append(short)
-                bounds_raw[short] = (lb, ub)
+        return induction_vars, bounds_raw, loop_order, iv_map
 
-        return induction_vars, bounds_raw, loop_order
+    def _parse_load(
+        self,
+        line: str,
+        keyword: str,
+        is_affine: bool,
+        iv_map: Dict[str, str],
+    ) -> Optional[AccessPattern]:
+        if "=" not in line or keyword not in line:
+            return None
+
+        lhs, rhs = line.split("=", 1)
+        ssa_result = lhs.strip()
+
+        kw_idx = rhs.find(keyword)
+        if kw_idx < 0:
+            return None
+
+        body = rhs[kw_idx + len(keyword):].strip()
+        lb = body.find("[")
+        if lb < 0:
+            return None
+        rb = _find_matching(body, lb, "[", "]")
+        if rb < 0:
+            return None
+
+        tensor = body[:lb].strip()
+        indices_raw = body[lb + 1:rb]
+        after = body[rb + 1:].strip()
+        type_str = after.split(":", 1)[1].strip() if ":" in after else ""
+
+        shape, etype = _parse_memref_type(type_str)
+        idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
+
+        return AccessPattern(
+            tensor_name=tensor,
+            index_exprs=idx_exprs,
+            is_affine=is_affine,
+            is_read=True,
+            shape=shape,
+            element_type=etype,
+            ssa_name=ssa_result,
+        )
+
+    def _parse_store(
+        self,
+        line: str,
+        keyword: str,
+        is_affine: bool,
+        iv_map: Dict[str, str],
+    ) -> Optional[AccessPattern]:
+        kw_idx = line.find(keyword)
+        if kw_idx < 0:
+            return None
+
+        body = line[kw_idx + len(keyword):].strip()
+        comma_idx = body.find(",")
+        if comma_idx < 0:
+            return None
+
+        val_ssa = body[:comma_idx].strip()
+        rest = body[comma_idx + 1:].strip()
+        lb = rest.find("[")
+        if lb < 0:
+            return None
+        rb = _find_matching(rest, lb, "[", "]")
+        if rb < 0:
+            return None
+
+        tensor = rest[:lb].strip()
+        indices_raw = rest[lb + 1:rb]
+        after = rest[rb + 1:].strip()
+        type_str = after.split(":", 1)[1].strip() if ":" in after else ""
+
+        shape, etype = _parse_memref_type(type_str)
+        idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
+
+        return AccessPattern(
+            tensor_name=tensor,
+            index_exprs=idx_exprs,
+            is_affine=is_affine,
+            is_read=False,
+            shape=shape,
+            element_type=etype,
+            ssa_name=val_ssa,
+        )
 
     def _collect_accesses(
         self,
         text: str,
-        induction_vars: List[str],
+        iv_map: Dict[str, str],
     ) -> Tuple[List[AccessPattern], List[AccessPattern]]:
-        """Parse all affine.load / affine.store / memref.load / memref.store."""
-        # Build IV SSA → short name map for index normalization
-        iv_map: Dict[str, str] = {}
-        for short in induction_vars:
-            iv_map[f'%{short}'] = short
-
         reads: List[AccessPattern] = []
         writes: List[AccessPattern] = []
 
-        # affine.load
-        for m in _RE_AFFINE_LOAD.finditer(text):
-            ssa_result = m.group(1)
-            tensor = m.group(2)
-            indices_raw = m.group(3)
-            type_str = m.group(4)
-            shape, etype = _parse_memref_type(type_str)
-            idx_exprs = [_normalize_index(i, iv_map) for i in indices_raw.split(',')]
-            reads.append(AccessPattern(
-                tensor_name=tensor,
-                index_exprs=idx_exprs,
-                is_affine=True,
-                is_read=True,
-                shape=shape,
-                element_type=etype,
-                ssa_name=ssa_result,
-            ))
+        for line in self._iter_clean_lines(text):
+            if "affine.load" in line and "=" in line:
+                parsed = self._parse_load(line, "affine.load", True, iv_map)
+                if parsed is not None:
+                    reads.append(parsed)
+                continue
 
-        # affine.store
-        for m in _RE_AFFINE_STORE.finditer(text):
-            val_ssa = m.group(1)
-            tensor = m.group(2)
-            indices_raw = m.group(3)
-            type_str = m.group(4)
-            shape, etype = _parse_memref_type(type_str)
-            idx_exprs = [_normalize_index(i, iv_map) for i in indices_raw.split(',')]
-            writes.append(AccessPattern(
-                tensor_name=tensor,
-                index_exprs=idx_exprs,
-                is_affine=True,
-                is_read=False,
-                shape=shape,
-                element_type=etype,
-                ssa_name=val_ssa,
-            ))
+            if "memref.load" in line and "=" in line:
+                parsed = self._parse_load(line, "memref.load", False, iv_map)
+                if parsed is not None:
+                    reads.append(parsed)
+                continue
 
-        # memref.load (non-affine fallback)
-        for m in _RE_MEMREF_LOAD.finditer(text):
-            ssa_result = m.group(1)
-            tensor = m.group(2)
-            indices_raw = m.group(3)
-            type_str = m.group(4)
-            shape, etype = _parse_memref_type(type_str)
-            idx_exprs = [_normalize_index(i, iv_map) for i in indices_raw.split(',')]
-            reads.append(AccessPattern(
-                tensor_name=tensor,
-                index_exprs=idx_exprs,
-                is_affine=False,
-                is_read=True,
-                shape=shape,
-                element_type=etype,
-                ssa_name=ssa_result,
-            ))
+            if "affine.store" in line:
+                parsed = self._parse_store(line, "affine.store", True, iv_map)
+                if parsed is not None:
+                    writes.append(parsed)
+                continue
 
-        # memref.store (non-affine fallback)
-        for m in _RE_MEMREF_STORE.finditer(text):
-            val_ssa = m.group(1)
-            tensor = m.group(2)
-            indices_raw = m.group(3)
-            type_str = m.group(4)
-            shape, etype = _parse_memref_type(type_str)
-            idx_exprs = [_normalize_index(i, iv_map) for i in indices_raw.split(',')]
-            writes.append(AccessPattern(
-                tensor_name=tensor,
-                index_exprs=idx_exprs,
-                is_affine=False,
-                is_read=False,
-                shape=shape,
-                element_type=etype,
-                ssa_name=val_ssa,
-            ))
+            if "memref.store" in line:
+                parsed = self._parse_store(line, "memref.store", False, iv_map)
+                if parsed is not None:
+                    writes.append(parsed)
 
         return reads, writes
 
     def _collect_compute_ops(self, text: str) -> List[ComputeOp]:
-        """Extract all arithmetic operations inside the loop body."""
         ops: List[ComputeOp] = []
 
-        for m in _RE_ARITH_BINOP.finditer(text):
-            ops.append(ComputeOp(
-                op_type=m.group(2),
-                operands=[m.group(3), m.group(4)],
-                result=m.group(1),
-            ))
+        unary_ops = {
+            "negf",
+            "extf",
+            "truncf",
+        }
 
-        for m in _RE_ARITH_CONST.finditer(text):
-            try:
-                val = float(m.group(2))
-            except ValueError:
-                val = 0.0
-            ops.append(ComputeOp(
-                op_type='constant',
-                operands=[],
-                result=m.group(1),
-                value=val,
-            ))
+        for line in self._iter_clean_lines(text):
+            if "= arith." not in line:
+                continue
 
-        for m in _RE_ARITH_NEGF.finditer(text):
-            ops.append(ComputeOp(
-                op_type='negf',
-                operands=[m.group(2)],
-                result=m.group(1),
-            ))
+            lhs, rhs = line.split("=", 1)
+            result_ssa = lhs.strip()
+            rhs = rhs.strip()
+            marker = "arith."
+            marker_idx = rhs.find(marker)
+            if marker_idx < 0:
+                continue
+
+            op_payload = rhs[marker_idx + len(marker):].strip()
+            if not op_payload:
+                continue
+
+            parts = op_payload.split(None, 1)
+            op_type = parts[0].strip()
+            remainder = parts[1].strip() if len(parts) > 1 else ""
+            operands_part = remainder.split(":", 1)[0].strip() if remainder else ""
+
+            if op_type == "constant":
+                value: Optional[float]
+                literal = operands_part
+                try:
+                    value = float(literal)
+                except ValueError:
+                    value = 0.0
+                ops.append(
+                    ComputeOp(
+                        op_type="constant",
+                        operands=[],
+                        result=result_ssa,
+                        value=value,
+                    )
+                )
+                continue
+
+            if not operands_part:
+                ops.append(ComputeOp(op_type=op_type, operands=[], result=result_ssa))
+                continue
+
+            if op_type in unary_ops:
+                operand = operands_part.split(",", 1)[0].strip()
+                ops.append(ComputeOp(op_type=op_type, operands=[operand], result=result_ssa))
+                continue
+
+            operands = [o.strip() for o in _split_top_level(operands_part, ",") if o.strip()]
+            ops.append(ComputeOp(op_type=op_type, operands=operands[:2], result=result_ssa))
 
         return ops
 
@@ -444,18 +639,15 @@ class AffineExtractor:
         reads: List[AccessPattern],
         writes: List[AccessPattern],
     ) -> Tuple[Dict[str, List[int]], Dict[str, str]]:
-        """Build shape and type dicts for all tensors referenced."""
         shapes: Dict[str, List[int]] = {}
         types: Dict[str, str] = {}
 
-        # From func args
         for arg_name, arg_type in func_args.items():
-            if 'memref<' in arg_type:
-                s, t = _parse_memref_type(arg_type)
-                shapes[arg_name] = s
-                types[arg_name] = t
+            if "memref<" in arg_type:
+                shape, elem = _parse_memref_type(arg_type)
+                shapes[arg_name] = shape
+                types[arg_name] = elem
 
-        # From access sites (fills in any that were not in func args)
         for acc in reads + writes:
             if acc.tensor_name not in shapes:
                 shapes[acc.tensor_name] = acc.shape
@@ -464,30 +656,22 @@ class AffineExtractor:
 
         return shapes, types
 
-    def _dominant_element_type(self, types: Dict[str, str]) -> str:
-        """Return the most common element type, defaulting to 'f32'."""
-        if not types:
-            return 'f32'
-        from collections import Counter
-        cnt = Counter(types.values())
-        return cnt.most_common(1)[0][0]
+    def _dominant_element_type(self, tensor_types: Dict[str, str]) -> str:
+        if not tensor_types:
+            return "f32"
+        return Counter(tensor_types.values()).most_common(1)[0][0]
 
     def _classify_iv_roles(
         self,
         induction_vars: List[str],
         writes: List[AccessPattern],
     ) -> Tuple[List[str], List[str]]:
-        """
-        An IV is 'parallel' if it appears in at least one write subscript.
-        An IV is a 'reduction' variable if it does NOT appear in any write.
-        """
         if not writes:
             return [], list(induction_vars)
 
-        # Collect all indices that appear in the write subscripts
-        write_idx_pool: set = set()
-        for w in writes:
-            for expr in w.index_exprs:
+        write_idx_pool = set()
+        for write in writes:
+            for expr in write.index_exprs:
                 for iv in induction_vars:
                     if iv in expr:
                         write_idx_pool.add(iv)
@@ -502,30 +686,22 @@ class AffineExtractor:
         reads: List[AccessPattern],
         writes: List[AccessPattern],
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Detect whether the loop body performs an accumulation into the output.
-        An accumulation exists when the output tensor is read AND written,
-        and the written value depends on the read value via an addf/addi.
-        """
         if not writes:
             return False, None
 
         write_tensor = writes[0].tensor_name
         write_ssa = writes[0].ssa_name
 
-        # Check whether any read accesses the output tensor
-        out_read = any(r.tensor_name == write_tensor for r in reads)
-        if not out_read:
+        output_read_exists = any(read.tensor_name == write_tensor for read in reads)
+        if not output_read_exists:
             return False, None
 
-        # Find the op that produces the written value
         for op in compute_ops:
-            if op.result == write_ssa and op.op_type in ('addf', 'addi'):
+            if op.result == write_ssa and op.op_type in ("addf", "addi"):
                 return True, op.op_type
 
-        # Sometimes there are two ops: mulf then addf; check if write is any add chain
         for op in compute_ops:
-            if op.op_type in ('addf', 'addi'):
+            if op.op_type in ("addf", "addi"):
                 return True, op.op_type
 
         return False, None
@@ -533,27 +709,23 @@ class AffineExtractor:
     def _resolve_bound(
         self,
         bound: str,
-        tensor_shapes: Dict[str, List[int]],
-        func_args: Dict[str, str],
         const_map: Dict[str, Union[int, float]],
     ) -> Union[int, str]:
-        """
-        Try to resolve a loop bound to a concrete integer.
-        - If already an integer literal, return int.
-        - If an SSA constant, look up in const_map.
-        - Otherwise return as string (symbolic).
-        """
-        bound = bound.strip()
+        value = bound.strip()
+
         try:
-            return int(bound)
+            return int(value, 10)
         except ValueError:
             pass
-        if bound in const_map:
-            return int(const_map[bound])
-        # Strip '%' and try
-        bare = bound.lstrip('%')
+
+        if value in const_map:
+            return int(const_map[value])
+
+        no_percent = value.lstrip("%")
+        if no_percent in const_map:
+            return int(const_map[no_percent])
+
         try:
-            return int(bare)
+            return int(no_percent, 10)
         except ValueError:
-            pass
-        return bound  # symbolic, keep as str
+            return no_percent
