@@ -1,0 +1,82 @@
+name: Export Existing Docker Image Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag in GHCR to export"
+        required: true
+        default: "llvm17"
+      artifact_name:
+        description: "Artifact name shown in GitHub Actions"
+        required: true
+        default: "loophole-polygeist-llvm17"
+      retention_days:
+        description: "Artifact retention in days (1-90)"
+        required: true
+        default: "14"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Resolve image reference
+        id: vars
+        shell: bash
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE_REF="ghcr.io/${OWNER_LC}/loophole-polygeist:${{ inputs.image_tag }}"
+          echo "owner_lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull existing image
+        shell: bash
+        run: |
+          docker pull "${{ steps.vars.outputs.image_ref }}"
+
+      - name: Export image archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+
+          ARCHIVE_BASENAME="loophole-polygeist-${{ inputs.image_tag }}.tar.gz"
+          ARCHIVE_PATH="export/${ARCHIVE_BASENAME}"
+
+          docker save "${{ steps.vars.outputs.image_ref }}" | gzip -1 > "${ARCHIVE_PATH}"
+          SIZE_BYTES=$(stat -c%s "${ARCHIVE_PATH}")
+
+          if [ "${SIZE_BYTES}" -gt 1900000000 ]; then
+            split -b 1900m "${ARCHIVE_PATH}" "${ARCHIVE_PATH}.part."
+            rm -f "${ARCHIVE_PATH}"
+            {
+              echo "The exported archive was split into parts due to size."
+              echo
+              echo "Reassemble and load:"
+              echo "cat ${ARCHIVE_BASENAME}.part.* > ${ARCHIVE_BASENAME}"
+              echo "docker load -i ${ARCHIVE_BASENAME}"
+            } > export/README_LOAD_IMAGE.txt
+          else
+            {
+              echo "Load the Docker image with:"
+              echo "docker load -i ${ARCHIVE_BASENAME}"
+            } > export/README_LOAD_IMAGE.txt
+          fi
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: export/
+          retention-days: ${{ inputs.retention_days }}

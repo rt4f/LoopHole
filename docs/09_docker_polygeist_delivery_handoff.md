@@ -184,6 +184,16 @@ docker tag loophole-polygeist:llvm17 ghcr.io/schizoid-man/loophole-polygeist:llv
 docker push ghcr.io/schizoid-man/loophole-polygeist:llvm17
 ```
 
+### Option C: Private Repo, No PAT for Collaborators (Artifact Download)
+
+If collaborators are repo members and you want zero PAT setup for them:
+
+1. Run `.github/workflows/export-docker-image-artifact.yml` via `workflow_dispatch`.
+2. The workflow logs into GHCR, pulls the already-built image, and uploads a downloadable image archive artifact.
+3. Collaborators download from the Actions run page and run `docker load` locally.
+
+This option does not rebuild the image and keeps distribution private to repo collaborators.
+
 ---
 
 ## 7) Repository Push Checklist

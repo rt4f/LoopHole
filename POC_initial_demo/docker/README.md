@@ -60,7 +60,6 @@ loophole compile path/to/kernel.cpp -o path/to/kernel.mlir --std c++17
 
 Useful options:
 
-- `--docker-image loophole-polygeist:llvm19`
 - `--docker-image loophole-polygeist:llvm17`
 - `--frontend-binary cgeist` or `cgeist++`
 - `--no-affine-raise` to keep SCF form
@@ -96,3 +95,24 @@ A workflow is provided at `.github/workflows/publish-docker-image.yml`.
   - `ghcr.io/<owner>/loophole-polygeist:sha-<shortsha>`
 
 After the first publish, set the package visibility to public in GitHub Packages so collaborators can pull without authentication.
+
+## Private Repo: No-PAT Download Option
+
+If you want collaborators to avoid PAT setup entirely, use the export workflow:
+
+- Workflow: `.github/workflows/export-docker-image-artifact.yml`
+- Behavior: pulls existing `ghcr.io/.../loophole-polygeist:<tag>` and uploads a downloadable `.tar.gz` artifact
+- Important: it does not rebuild the image
+
+Collaborator flow (browser-only):
+
+1. Open the Actions run for `Export Existing Docker Image Artifact`.
+2. Download the artifact from the run summary.
+3. Extract/reassemble if split (instructions are included in `README_LOAD_IMAGE.txt`).
+4. Load the image locally:
+
+```bash
+docker load -i loophole-polygeist-llvm17.tar.gz
+```
+
+This works for private repositories as long as collaborators have access to the repo and Actions artifacts.
