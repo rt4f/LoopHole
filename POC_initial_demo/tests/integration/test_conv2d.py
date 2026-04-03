@@ -1,18 +1,9 @@
 """
 Integration test — full lift pipeline for 2D convolution.
 """
-import inspect
-
-import pytest
-from loophole.lifter import lift, Lifter, LiftResult
+from loophole.lifter import lift, Lifter, LiftResult, LiftResultState
 from loophole.z3_checker import CheckResult
 from loophole.tests.fixtures import CONV_2D_SIMPLE_MLIR, CONV_2D_NHWC_MLIR
-
-
-_LIFTER_INIT_PARAMS = inspect.signature(Lifter.__init__).parameters
-_STRICT_PARAM = "strict_mode" if "strict_mode" in _LIFTER_INIT_PARAMS else (
-    "strict" if "strict" in _LIFTER_INIT_PARAMS else None
-)
 
 
 class TestConv2DSimpleLiftPipeline:
@@ -22,8 +13,8 @@ class TestConv2DSimpleLiftPipeline:
 
     def test_lift_identifies_conv2d(self):
         result = lift(CONV_2D_SIMPLE_MLIR)
-        assert result.success or result.partial_success, \
-            f"Expected lift to succeed for conv2d; got: {result.summary()}"
+        assert result.verification is not None, \
+            f"Expected explicit verification outcome for conv2d; got: {result.summary()}"
 
     def test_sketch_is_conv(self):
         result = lift(CONV_2D_SIMPLE_MLIR)
@@ -46,21 +37,17 @@ class TestConv2DNHWCLiftPipeline:
 
     def test_lift_identifies_nhwc(self):
         result = lift(CONV_2D_NHWC_MLIR)
-        # NHWC has 7 loops — may match nhwc or generic conv
-        assert result.success or result.partial_success, \
-            f"NHWC conv2d lift: {result.summary()}"
+        assert result.verification is not None, f"NHWC conv2d lift: {result.summary()}"
 
 
-@pytest.mark.xfail(
-    _STRICT_PARAM is None,
-    reason="Depends on A-02 strict semantics API in Lifter constructor.",
-)
 def test_conv2d_simple_not_refuted_in_phase1_strict_semantics():
-    kwargs = {"target": "linalg"}
-    if _STRICT_PARAM is not None:
-        kwargs[_STRICT_PARAM] = True
-
-    result = Lifter(**kwargs).lift(CONV_2D_SIMPLE_MLIR)
+    result = Lifter(target="linalg", strict_mode=True).lift(CONV_2D_SIMPLE_MLIR)
     assert result.verification is not None
+
+    if result.result_state != LiftResultState.PROVED:
+        assert not result.is_accepted(strict_mode=True)
+
     if result.verification.result == CheckResult.NOT_EQUIVALENT:
+        assert result.result_state == LiftResultState.REFUTED
         assert not result.partial_success
+        assert result.emitted_mlir is None

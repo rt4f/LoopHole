@@ -16,7 +16,7 @@ from loophole.sketch_library import SKETCH_LIBRARY, OperationSketch
 from loophole.z3_checker import Z3EquivalenceChecker, CheckResult
 from loophole.sympy_tracer import SympyTracer
 from loophole.emitter import LinalgEmitter, StableHLOEmitter
-from loophole.lifter import Lifter, LiftResult
+from loophole.lifter import Lifter, LiftResult, LiftResultState
 from loophole.polygeist_frontend import (
   PolygeistFrontend,
   PolygeistFrontendError,
@@ -37,6 +37,7 @@ __all__ = [
     "StableHLOEmitter",
     "Lifter",
     "LiftResult",
+    "LiftResultState",
     "PolygeistFrontend",
     "PolygeistFrontendError",
     "CgeistInvocation",

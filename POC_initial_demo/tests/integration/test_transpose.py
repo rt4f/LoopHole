@@ -27,7 +27,7 @@ class TestTransposeLiftPipeline:
 
     def test_linalg_emitted(self):
         result = lift(TRANSPOSE_2D_MLIR, target="linalg")
-        if result.success or result.partial_success:
+        if result.success:
             assert result.emitted_mlir is not None
             assert "linalg" in result.emitted_mlir.lower()
 

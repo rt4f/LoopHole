@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 from loophole.affine_extractor import AffineExtractor, LoopNestInfo
@@ -41,6 +42,13 @@ from loophole.z3_checker import (
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
+
+
+class LiftResultState(Enum):
+    PROVED = "proved"
+    UNPROVED_TIMEOUT = "unproved_timeout"
+    REFUTED = "refuted"
+
 
 @dataclass
 class LiftResult:
@@ -68,12 +76,30 @@ class LiftResult:
         )
 
     @property
+    def result_state(self) -> LiftResultState:
+        if self.verification is None:
+            return LiftResultState.REFUTED
+        if self.verification.result == CheckResult.EQUIVALENT:
+            return LiftResultState.PROVED
+        if self.verification.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
+            return LiftResultState.UNPROVED_TIMEOUT
+        return LiftResultState.REFUTED
+
+    @property
     def partial_success(self) -> bool:
-        """True if a match was found but Z3 timed out — still useful."""
+        """True if a match was found but only timed out/unknown (never refuted)."""
         return (
             self.matched_sketch is not None
             and self.emitted_mlir is not None
+            and self.result_state == LiftResultState.UNPROVED_TIMEOUT
         )
+
+    def is_accepted(self, strict_mode: bool = False) -> bool:
+        if self.success:
+            return True
+        if strict_mode:
+            return False
+        return self.partial_success
 
     def summary(self) -> str:
         if self.success:
@@ -84,12 +110,19 @@ class LiftResult:
                 f"SymPy conf: {self.sympy_confidence:.2f} | "
                 f"Total: {self.total_elapsed_ms:.1f}ms"
             )
-        if self.partial_success:
+        if self.result_state == LiftResultState.UNPROVED_TIMEOUT:
             v = self.verification
             status = v.result.value if v else "no verification"
             return (
-                f"[PARTIAL] '{self.func_name}' -> {self.sketch_name} "
+                f"[UNPROVED_TIMEOUT] '{self.func_name}' -> {self.sketch_name} "
                 f"(Z3: {status}) SymPy conf: {self.sympy_confidence:.2f}"
+            )
+        if self.result_state == LiftResultState.REFUTED:
+            v = self.verification
+            status = v.result.value if v else "NO_VERDICT"
+            return (
+                f"[REFUTED] '{self.func_name}' -> {self.sketch_name or 'none'} "
+                f"(Z3: {status}) {self.error or ''}".rstrip()
             )
         return (
             f"[FAIL] Could not lift '{self.func_name}': {self.error or 'no match found'}"
@@ -108,6 +141,7 @@ class Lifter:
       target         : "linalg" | "stablehlo" | "both"
       z3_timeout_ms  : Z3 solver timeout per check (default 10s)
       top_k          : Number of top SymPy candidates to verify with Z3
+            strict_mode    : Accept only formally proved outputs
       verbose        : Print progress information
     """
 
@@ -116,11 +150,13 @@ class Lifter:
         target: str = "linalg",
         z3_timeout_ms: int = 10_000,
         top_k: int = 3,
+        strict_mode: bool = False,
         verbose: bool = False,
     ):
         self.target = target
         self.z3_timeout_ms = z3_timeout_ms
         self.top_k = top_k
+        self.strict_mode = strict_mode
         self.verbose = verbose
 
         self._extractor = AffineExtractor()
@@ -206,6 +242,41 @@ class Lifter:
             )
 
         sketch, report, sympy_conf = best_result
+
+        if report.result == CheckResult.NOT_EQUIVALENT:
+            return LiftResult(
+                func_name=loop.func_name,
+                matched_sketch=sketch,
+                sketch_name=sketch.name,
+                emitted_mlir=None,
+                verification=report,
+                sympy_confidence=sympy_conf,
+                total_elapsed_ms=total_ms,
+                target_dialect=self.target,
+                loop_info=loop,
+                candidates_tried=[c[0].name for c in candidates],
+                error=(
+                    f"Best candidate '{sketch.name}' was refuted by Z3 "
+                    "(NOT_EQUIVALENT)."
+                ),
+                parser_diagnostics=loop.diagnostics,
+            )
+
+        if self.strict_mode and report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
+            return LiftResult(
+                func_name=loop.func_name,
+                matched_sketch=sketch,
+                sketch_name=sketch.name,
+                emitted_mlir=None,
+                verification=report,
+                sympy_confidence=sympy_conf,
+                total_elapsed_ms=total_ms,
+                target_dialect=self.target,
+                loop_info=loop,
+                candidates_tried=[c[0].name for c in candidates],
+                error=f"Strict mode rejected unproved result ({report.result.value}).",
+                parser_diagnostics=loop.diagnostics,
+            )
 
         # Stage 4: emit MLIR
         try:
@@ -311,9 +382,11 @@ class Lifter:
         """
         Run Z3 verification on each candidate in order.
         Returns (sketch, report, confidence) for the first EQUIVALENT match.
-        If none prove EQUIVALENT, returns the best TIMEOUT or unknown result.
+        If none prove EQUIVALENT, returns the best TIMEOUT/UNKNOWN fallback.
+        If no timeout fallback exists, returns a refuted candidate explicitly.
         """
-        best_fallback: Optional[Tuple[OperationSketch, VerificationReport, float]] = None
+        best_timeout: Optional[Tuple[OperationSketch, VerificationReport, float]] = None
+        best_refuted: Optional[Tuple[OperationSketch, VerificationReport, float]] = None
 
         for sketch, conf in candidates[: self.top_k]:
             if self.verbose:
@@ -328,17 +401,15 @@ class Lifter:
                 return (sketch, report, conf)
 
             if report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
-                if best_fallback is None:
-                    best_fallback = (sketch, report, conf)
-            elif report.result == CheckResult.NOT_EQUIVALENT and conf >= 0.7:
-                # SymPy is confident but Z3 says NOT_EQUIVALENT — may be a Z3
-                # encoding precision issue (e.g. sliding-window index expressions).
-                # Treat as UNKNOWN fallback so we still emit a partial result.
-                if best_fallback is None:
-                    best_fallback = (sketch, report, conf)
+                if best_timeout is None:
+                    best_timeout = (sketch, report, conf)
+            elif report.result == CheckResult.NOT_EQUIVALENT:
+                if best_refuted is None:
+                    best_refuted = (sketch, report, conf)
 
-        # No formal proof — return best timeout candidate (partial success)
-        return best_fallback
+        # No formal proof — return best timeout candidate (partial success),
+        # otherwise return explicit refutation so callers can report it.
+        return best_timeout or best_refuted
 
     # ------------------------------------------------------------------
     # Stage 4: Emit
@@ -359,6 +430,7 @@ def lift(
     mlir_text: str,
     target: str = "linalg",
     z3_timeout_ms: int = 10_000,
+    strict_mode: bool = False,
     verbose: bool = False,
 ) -> LiftResult:
     """
@@ -372,6 +444,7 @@ def lift(
     lifter = Lifter(
         target=target,
         z3_timeout_ms=z3_timeout_ms,
+        strict_mode=strict_mode,
         verbose=verbose,
     )
     return lifter.lift(mlir_text)

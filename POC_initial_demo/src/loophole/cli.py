@@ -2,12 +2,9 @@
 cli.py — Command-line interface for LoopHole.
 
 Commands:
-<<<<<<< HEAD
     loophole compile -- Compile C/C++ into MLIR Affine/SCF form (Polygeist)
-=======
     loophole cgeist  -- Convert C/C++ source to MLIR with Polygeist cgeist
     loophole lift-c  -- One-step C/C++ -> MLIR -> lifted tensor dialect
->>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
   loophole lift    -- Lift a single MLIR Affine IR file to tensor dialect
   loophole verify  -- Only run formal verification, skip emit
   loophole batch   -- Lift all .mlir files in a directory
@@ -42,7 +39,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich import print as rprint
 
-from loophole.lifter import Lifter, LiftResult, lift as lift_one
+from loophole.lifter import Lifter, LiftResult, LiftResultState, lift as lift_one
 from loophole.polygeist_frontend import (
     CgeistInvocation,
     CgeistResult,
@@ -71,7 +68,6 @@ def main():
     pass
 
 
-<<<<<<< HEAD
 def _default_frontend_for_file(source_path: Path) -> str:
     cxx_exts = {".cc", ".cpp", ".cxx", ".c++", ".cp"}
     return "cgeist++" if source_path.suffix.lower() in cxx_exts else "cgeist"
@@ -232,7 +228,8 @@ def compile_cmd(
             border_style="green",
         )
     )
-=======
+
+
 def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
     lines = [f"[red]{exc}[/red]"]
     if exc.command:
@@ -242,7 +239,6 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
         lines.append(exc.stderr.strip()[:2000])
     console.print(Panel("\n".join(lines), title="cgeist failed", border_style="red"))
     sys.exit(2)
->>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +260,8 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
 @click.option("--report", is_flag=True, help="Print a summary verification report")
 @click.option("--no-verify", is_flag=True,
               help="Skip Z3 verification (emit based on SymPy match only)")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved results")
 def lift_cmd(
     input_file: str,
     output: Optional[str],
@@ -273,12 +271,16 @@ def lift_cmd(
     verbose: bool,
     report: bool,
     no_verify: bool,
+    strict: bool,
 ):
     """
     Lift an MLIR Affine IR file to a high-level tensor dialect.
 
     INPUT_FILE: Path to the .mlir file containing the scalar loop nest.
     """
+    if strict and no_verify:
+        raise click.UsageError("--strict cannot be combined with --no-verify.")
+
     src = Path(input_file).read_text(encoding="utf-8")
 
     with Progress(
@@ -294,12 +296,21 @@ def lift_cmd(
             target=target,
             z3_timeout_ms=0 if no_verify else z3_timeout,
             top_k=top_k,
+            strict_mode=strict,
             verbose=verbose,
         )
         result = lifter.lift(src)
         progress.advance(task)
 
-    _print_lift_result(result, output, report, verbose)
+    _print_lift_result(result, output, report, verbose, strict_mode=strict)
+
+
+def _determine_exit_code(result: LiftResult, strict_mode: bool) -> int:
+    if result.success:
+        return 0
+    if result.result_state == LiftResultState.UNPROVED_TIMEOUT:
+        return 2 if strict_mode else 0
+    return 1
 
 
 def _print_lift_result(
@@ -307,27 +318,28 @@ def _print_lift_result(
     output: Optional[str],
     report: bool,
     verbose: bool,
+    strict_mode: bool = False,
 ):
-    if result.error and not result.partial_success:
-        console.print(Panel(
-            f"[red bold]LIFT FAILED[/red bold]\n\n"
-            f"[red]{result.error}[/red]",
-            title="LoopHole Result",
-            border_style="red",
-        ))
-        sys.exit(1)
+    exit_code = _determine_exit_code(result, strict_mode)
 
-    # Determine status color
     if result.success:
         status = "[green bold]FORMALLY PROVED - EQUIVALENT[/green bold]"
         border = "green"
-    elif result.partial_success:
+    elif result.result_state == LiftResultState.UNPROVED_TIMEOUT:
         v = result.verification
         vstr = v.result.value if v else "unknown"
-        status = f"[yellow bold]~ MATCHED (Z3: {vstr})[/yellow bold]"
+        if strict_mode:
+            status = f"[yellow bold]UNPROVED_TIMEOUT - STRICT REJECTED (Z3: {vstr})[/yellow bold]"
+        else:
+            status = f"[yellow bold]UNPROVED_TIMEOUT (Z3: {vstr})[/yellow bold]"
         border = "yellow"
+    elif result.result_state == LiftResultState.REFUTED:
+        v = result.verification
+        vstr = v.result.value if v else "NO_VERDICT"
+        status = f"[red bold]REFUTED (Z3: {vstr})[/red bold]"
+        border = "red"
     else:
-        status = "[red]LIFT FAILED[/red]"
+        status = "[red bold]LIFT FAILED[/red bold]"
         border = "red"
 
     header_lines = [
@@ -338,6 +350,8 @@ def _print_lift_result(
         f"  SymPy confidence: {result.sympy_confidence:.2f}",
         f"  Total time      : {result.total_elapsed_ms:.1f} ms",
     ]
+    if result.error:
+        header_lines.append(f"  Error           : {result.error}")
     if result.verification:
         v = result.verification
         header_lines.append(
@@ -359,6 +373,9 @@ def _print_lift_result(
 
     if report and result.verification:
         _print_verification_report(result.verification)
+
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def _print_verification_report(v):
@@ -479,6 +496,8 @@ def cgeist_cmd(
               help="Number of top SymPy candidates to verify with Z3")
 @click.option("--no-verify", is_flag=True,
               help="Skip Z3 verification (emit based on SymPy match only)")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved results")
 @click.option("--report", is_flag=True, help="Print a summary verification report")
 @click.option("--language", "-x", type=click.Choice(["c", "cpp"]), default="c",
               show_default=True, help="Source language for cgeist")
@@ -505,6 +524,7 @@ def lift_c_cmd(
     z3_timeout: int,
     top_k: int,
     no_verify: bool,
+    strict: bool,
     report: bool,
     language: str,
     function: Optional[str],
@@ -519,6 +539,8 @@ def lift_c_cmd(
     """One-step flow: C/C++ source -> cgeist MLIR -> lifted tensor dialect."""
     if not source_files:
         raise click.UsageError("At least one source file is required.")
+    if strict and no_verify:
+        raise click.UsageError("--strict cannot be combined with --no-verify.")
 
     frontend = PolygeistFrontend(
         cgeist_bin=cgeist_bin,
@@ -560,6 +582,7 @@ def lift_c_cmd(
         target=target,
         z3_timeout_ms=0 if no_verify else z3_timeout,
         top_k=top_k,
+        strict_mode=strict,
         verbose=verbose,
     )
     result = lifter.lift(cgeist_result.mlir_text)
@@ -570,7 +593,7 @@ def lift_c_cmd(
             f"command: {' '.join(cgeist_result.command)}[/dim]"
         )
 
-    _print_lift_result(result, output, report, verbose)
+    _print_lift_result(result, output, report, verbose, strict_mode=strict)
 
 
 # ---------------------------------------------------------------------------
