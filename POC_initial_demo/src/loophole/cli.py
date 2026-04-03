@@ -28,6 +28,7 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -311,6 +312,14 @@ def _determine_exit_code(result: LiftResult, strict_mode: bool) -> int:
     if result.result_state == LiftResultState.UNPROVED_TIMEOUT:
         return 2 if strict_mode else 0
     return 1
+
+
+def _result_state_color(state: LiftResultState) -> str:
+    if state == LiftResultState.PROVED:
+        return "green"
+    if state == LiftResultState.UNPROVED_TIMEOUT:
+        return "yellow"
+    return "red"
 
 
 def _print_lift_result(
@@ -689,7 +698,9 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
               default="linalg", show_default=True)
 @click.option("--z3-timeout", type=int, default=10_000, show_default=True)
-@click.option("--report", is_flag=True, help="Print JSON benchmarking report")
+@click.option("--report", is_flag=True, help="Write JSON report for batch run")
+@click.option("--report-path", type=click.Path(path_type=Path), default=None,
+              help="Optional JSON report path (default: <output-dir>/loophole_report.json)")
 @click.option("--verbose", "-v", is_flag=True)
 def batch(
     input_dir: str,
@@ -697,6 +708,7 @@ def batch(
     target: str,
     z3_timeout: int,
     report: bool,
+    report_path: Optional[Path],
     verbose: bool,
 ):
     """
@@ -716,13 +728,16 @@ def batch(
     lifter = Lifter(target=target, z3_timeout_ms=z3_timeout, verbose=verbose)
 
     results = []
-    success = 0
-    partial = 0
-    failed = 0
+    state_counts = {
+        LiftResultState.PROVED: 0,
+        LiftResultState.UNPROVED_TIMEOUT: 0,
+        LiftResultState.REFUTED: 0,
+    }
 
     table = Table(title=f"Batch Lift Results: {input_dir}", show_header=True)
     table.add_column("File", style="cyan")
     table.add_column("Sketch")
+    table.add_column("State")
     table.add_column("Z3")
     table.add_column("Conf")
     table.add_column("ms")
@@ -739,54 +754,88 @@ def batch(
             src = mlir_file.read_text(encoding="utf-8")
             result = lifter.lift(src)
 
+            state = result.result_state
+            state_counts[state] += 1
+            state_label = state.value.upper()
+            state_color = _result_state_color(state)
+
             z3_str = result.verification.result.value if result.verification else "-"
             sketch_str = result.sketch_name or "-"
             conf_str = f"{result.sympy_confidence:.2f}"
             ms_str = f"{result.total_elapsed_ms:.0f}"
 
-            color = "green" if result.success else ("yellow" if result.partial_success else "red")
             table.add_row(
                 mlir_file.name,
-                f"[{color}]{sketch_str}[/{color}]",
+                f"[{state_color}]{sketch_str}[/{state_color}]",
+                f"[{state_color}]{state_label}[/{state_color}]",
                 z3_str,
                 conf_str,
                 ms_str,
             )
 
-            if result.success:
-                success += 1
-            elif result.partial_success:
-                partial += 1
-            else:
-                failed += 1
-
+            emitted_path = None
             if result.emitted_mlir:
                 out_file = out_path / (mlir_file.stem + "_lifted.mlir")
                 out_file.write_text(result.emitted_mlir, encoding="utf-8")
+                emitted_path = str(out_file)
 
             results.append({
                 "file": str(mlir_file),
+                "file_name": mlir_file.name,
                 "sketch": result.sketch_name,
+                "state": state_label,
+                "accepted_loose": result.is_accepted(strict_mode=False),
+                "accepted_strict": result.is_accepted(strict_mode=True),
                 "z3": z3_str,
                 "confidence": result.sympy_confidence,
                 "elapsed_ms": result.total_elapsed_ms,
                 "success": result.success,
+                "error": result.error,
+                "emitted_file": emitted_path,
             })
             progress.advance(task)
+
+    total = len(mlir_files)
+    proved = state_counts[LiftResultState.PROVED]
+    unproved_timeout = state_counts[LiftResultState.UNPROVED_TIMEOUT]
+    refuted = state_counts[LiftResultState.REFUTED]
 
     console.print(table)
     console.print(
         f"\n[bold]Summary:[/bold] "
-        f"[green]{success} proved[/green] / "
-        f"[yellow]{partial} partial[/yellow] / "
-        f"[red]{failed} failed[/red] "
-        f"out of {len(mlir_files)} files"
+        f"[green]{proved} PROVED[/green] / "
+        f"[yellow]{unproved_timeout} UNPROVED_TIMEOUT[/yellow] / "
+        f"[red]{refuted} REFUTED[/red] "
+        f"out of {total} files"
     )
 
     if report:
-        report_path = out_path / "loophole_report.json"
-        report_path.write_text(json.dumps(results, indent=2))
-        console.print(f"\n[dim]Report written to: {report_path}[/dim]")
+        resolved_report_path = report_path or (out_path / "loophole_report.json")
+        resolved_report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        report_payload = {
+            "schema_version": "1.0",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "input_dir": str(in_path),
+            "output_dir": str(out_path),
+            "target": target,
+            "z3_timeout_ms": z3_timeout,
+            "summary": {
+                "total_files": total,
+                "proved": proved,
+                "unproved_timeout": unproved_timeout,
+                "refuted": refuted,
+                "accepted_loose": sum(1 for r in results if r["accepted_loose"]),
+                "accepted_strict": sum(1 for r in results if r["accepted_strict"]),
+            },
+            "results": results,
+        }
+
+        resolved_report_path.write_text(
+            json.dumps(report_payload, indent=2),
+            encoding="utf-8",
+        )
+        console.print(f"\n[dim]Report written to: {resolved_report_path}[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +883,7 @@ def demo(target: str, verbose: bool):
     """
     Run the built-in demo: lift canonical examples (matmul, transpose, conv1d, conv2d).
 
-    No input files needed — uses embedded MLIR fixtures.
+    No input files needed - uses embedded MLIR fixtures.
     """
     from loophole.tests.fixtures import DEMO_FIXTURES
 
@@ -849,7 +898,7 @@ def demo(target: str, verbose: bool):
     results_data = []
 
     for fixture_name, mlir_text in DEMO_FIXTURES.items():
-        console.print(f"\n[bold]─── {fixture_name} ───[/bold]")
+        console.print(f"\n[bold]--- {fixture_name} ---[/bold]")
 
         with Progress(
             SpinnerColumn(),
@@ -862,30 +911,28 @@ def demo(target: str, verbose: bool):
             result = lifter.lift(mlir_text)
             progress.advance(task)
 
-        # Print summary line
-        if result.success:
-            icon = "[green]OK[/green]"
-            z3_str = f"[green]{result.verification.result.value}[/green] in {result.verification.elapsed_ms:.0f}ms"
-        elif result.partial_success:
-            icon = "[yellow]~[/yellow]"
-            v = result.verification
-            z3_str = f"[yellow]{v.result.value if v else 'N/A'}[/yellow]"
+        state = result.result_state
+        state_label = state.value.upper()
+        state_color = _result_state_color(state)
+        if result.verification:
+            z3_str = (
+                f"[{state_color}]{result.verification.result.value}[/{state_color}] "
+                f"in {result.verification.elapsed_ms:.0f}ms"
+            )
         else:
-            icon = "[red]FAIL[/red]"
-            z3_str = "[red]FAIL[/red]"
+            z3_str = "[dim]NO_VERDICT[/dim]"
 
         console.print(
-            f"  {icon} {fixture_name} → [magenta]{result.sketch_name or 'no match'}[/magenta] "
+            f"  [{state_color}]{state_label}[/{state_color}] {fixture_name} -> [magenta]{result.sketch_name or 'no match'}[/magenta] "
             f"| Z3: {z3_str} | conf: {result.sympy_confidence:.2f} | {result.total_elapsed_ms:.0f}ms"
         )
 
-        # Print parser diagnostics if any exist
         if result.parser_diagnostics:
             for diag in result.parser_diagnostics:
                 level_color = {"error": "red", "warning": "yellow", "debug": "cyan"}.get(diag.level, "white")
                 console.print(f"    [{level_color}]{diag.level.upper()}[/{level_color}] {diag.location}: {diag.reason}")
                 if diag.guidance:
-                    console.print(f"      → {diag.guidance}")
+                    console.print(f"      -> {diag.guidance}")
 
         if result.emitted_mlir:
             syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=False)
@@ -894,13 +941,11 @@ def demo(target: str, verbose: bool):
         results_data.append({
             "kernel": fixture_name,
             "sketch": result.sketch_name,
-            "success": result.success,
-            "partial": result.partial_success,
+            "state": state_label,
             "confidence": result.sympy_confidence,
             "ms": result.total_elapsed_ms,
         })
 
-    # Final summary table
     console.print("\n")
     table = Table(title="Demo Summary", show_header=True)
     table.add_column("Kernel", style="cyan")
@@ -909,13 +954,18 @@ def demo(target: str, verbose: bool):
     table.add_column("Conf")
     table.add_column("ms")
 
-    proved = sum(1 for r in results_data if r["success"])
-    partial = sum(1 for r in results_data if r["partial"] and not r["success"])
+    proved = sum(1 for r in results_data if r["state"] == "PROVED")
+    unproved_timeout = sum(1 for r in results_data if r["state"] == "UNPROVED_TIMEOUT")
+    refuted = sum(1 for r in results_data if r["state"] == "REFUTED")
 
     for r in results_data:
-        status = "[green]PROVED[/green]" if r["success"] else (
-            "[yellow]PARTIAL[/yellow]" if r["partial"] else "[red]FAIL[/red]"
-        )
+        if r["state"] == "PROVED":
+            status = "[green]PROVED[/green]"
+        elif r["state"] == "UNPROVED_TIMEOUT":
+            status = "[yellow]UNPROVED_TIMEOUT[/yellow]"
+        else:
+            status = "[red]REFUTED[/red]"
+
         table.add_row(
             r["kernel"],
             r["sketch"] or "-",
@@ -928,7 +978,8 @@ def demo(target: str, verbose: bool):
     console.print(
         f"\n[bold]Result:[/bold] "
         f"[green]{proved}/{len(results_data)} formally proved[/green] | "
-        f"[yellow]{partial} partial (Z3 timeout)[/yellow]"
+        f"[yellow]{unproved_timeout} unproved (timeout/unknown)[/yellow] | "
+        f"[red]{refuted} refuted[/red]"
     )
 
 

@@ -13,6 +13,9 @@
 - A new `loophole compile` command provides step 1 of a two-step workflow:
   1. Compile C/C++ into MLIR.
   2. Lift generated MLIR with `loophole lift`.
+- CLI result reporting now uses explicit trust-state labels: `PROVED`, `UNPROVED_TIMEOUT`, `REFUTED`.
+- `loophole batch --report` now writes a structured JSON payload, with `--report-path` for explicit output location.
+- A baseline weekly benchmark helper script is available at `scripts/generate_weekly_benchmark_report.py`.
 
 ---
 

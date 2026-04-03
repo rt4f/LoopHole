@@ -24,15 +24,11 @@ Once lifted, these programs can be passed to domain-specific ML compilers (XLA, 
 | [04 — Implementation Roadmap](./docs/04_implementation_roadmap.md) | Step-by-step phased build plan: 3-month POC, 6-month extension, and long-term research phases with concrete deliverables |
 | [05 — Novel Research Directions](./docs/05_novel_research_directions.md) | Unexplored frontiers: sparse tensor synthesis, Transform dialect scheduling, dynamic shape inference, and auto-documentation |
 | [06 — References & Resources](./docs/06_references.md) | All papers, repositories, tools, benchmarks, and links cited throughout this documentation |
-<<<<<<< HEAD
 | [07 — POC Implementation Audit](./docs/07_poc_implementation_audit.md) | Ground-truth implementation status, limitations, hardcoding/stubs inventory, and prioritized fix plan |
 | [08 — Three-Person Parallel Execution Plan](./docs/08_three_person_parallel_execution_plan.md) | Execution-ready task graph for three contributors with dependencies, checkpoints, and metrics |
 | [09 — Docker/Polygeist Delivery Handoff](./docs/09_docker_polygeist_delivery_handoff.md) | Full change log, validation evidence, drawbacks, limitations, and distribution plan for prebuilt images |
 | [POC Docker Polygeist Quickstart](./POC_initial_demo/docker/README.md) | Reproducible Polygeist+MLIR container with two-step C/C++ compile-then-lift workflow |
-=======
-| [07 — POC Implementation Audit](./docs/07_poc_implementation_audit.md) | Deep audit of implemented POC behavior, limitations, hardcoding/stubs, and prioritized fixes |
-| [08 — MLIR + Polygeist Docker Migration Plan](./docs/08_mlir_polygeist_docker_migration_plan.md) | Sequential implementation plan for Dockerized Polygeist integration and regex-to-MLIR parser migration |
->>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
+| [Person C Lane Docs](./docs/C/README.md) | Phase 2 reporting, batch JSON schema, and weekly benchmark workflow documentation |
 
 ---
 
