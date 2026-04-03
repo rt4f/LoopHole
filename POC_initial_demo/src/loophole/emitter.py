@@ -23,8 +23,14 @@ The emitter supports:
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
+import re
 from loophole.affine_extractor import LoopNestInfo
 from loophole.sketch_library import ComputePayloadType, OperationSketch
+
+try:
+    import sympy as _sympy
+except Exception:
+    _sympy = None
 
 
 class EmissionError(ValueError):
@@ -104,6 +110,124 @@ def _require_shape(
             f"Expected rank {expected_rank}, got rank {len(shape)}."
         )
     return shape
+
+
+def _require_iv(ivs: List[str], idx: int, role: str, op_name: str) -> str:
+    if idx >= len(ivs):
+        raise EmissionError(
+            f"Convolution attr policy failure for '{op_name}': missing {role} iv at position {idx}."
+        )
+    return ivs[idx]
+
+
+def _find_read_access_expr(loop: LoopNestInfo, tensor_name: str, dim: int, op_name: str) -> str:
+    for read in loop.reads:
+        if read.tensor_name == tensor_name and dim < len(read.index_exprs):
+            return read.index_exprs[dim]
+    raise EmissionError(
+        f"Convolution attr policy failure for '{op_name}': cannot find read access for "
+        f"tensor '{tensor_name}' at dimension {dim}."
+    )
+
+
+def _infer_linear_coeff(expr: str, var: str) -> Optional[int]:
+    expr = expr.strip()
+    if not expr or not var:
+        return None
+
+    if _sympy is None:
+        # Minimal fallback for simple patterns: var, N*var
+        if expr == var:
+            return 1
+        m = re.fullmatch(rf"(\d+)\*{re.escape(var)}", expr.replace(" ", ""))
+        if m:
+            return int(m.group(1))
+        return None
+
+    try:
+        names = set(re.findall(r"\b[a-zA-Z_]\w*\b", expr))
+        locals_map = {n: _sympy.Symbol(n, integer=True) for n in names}
+        parsed = _sympy.expand(_sympy.sympify(expr, locals=locals_map))
+        sym = _sympy.Symbol(var, integer=True)
+        coeff = parsed.coeff(sym)
+        if coeff is None or coeff == 0:
+            return None
+        if getattr(coeff, "free_symbols", None):
+            return None
+        if coeff.is_integer is True:
+            return int(coeff)
+        as_float = float(coeff)
+        if as_float.is_integer():
+            return int(as_float)
+    except Exception:
+        return None
+
+    return None
+
+
+def _infer_stride_dilation_from_expr(
+    expr: str,
+    out_var: str,
+    ker_var: str,
+    op_name: str,
+    axis_label: str,
+) -> Tuple[int, int]:
+    stride = _infer_linear_coeff(expr, out_var)
+    dilation = _infer_linear_coeff(expr, ker_var)
+
+    if stride is None or dilation is None:
+        raise EmissionError(
+            f"Convolution attr policy failure for '{op_name}' on axis '{axis_label}': "
+            f"cannot infer stride/dilation from expression '{expr}'."
+        )
+    if stride <= 0 or dilation <= 0:
+        raise EmissionError(
+            f"Convolution attr policy failure for '{op_name}' on axis '{axis_label}': "
+            f"inferred non-positive stride/dilation ({stride}, {dilation}) from '{expr}'."
+        )
+    return stride, dilation
+
+
+def _infer_conv2d_window_attrs(loop: LoopNestInfo, input_name: str, op_name: str) -> Tuple[int, int, int, int]:
+    """Infer (stride_h, dilation_h, stride_w, dilation_w) from input access expressions.
+
+    This supports multiple layouts (plain 2D, NHWC, NCHW) by inspecting which input
+    dimensions depend on exactly one parallel IV and one reduction IV.
+    """
+    reads = [r for r in loop.reads if r.tensor_name == input_name]
+    if not reads:
+        raise EmissionError(
+            f"Convolution attr policy failure for '{op_name}': cannot find read access for "
+            f"tensor '{input_name}'."
+        )
+
+    axes: List[Tuple[int, int]] = []
+    # Collect candidate spatial axes in input-dimension order.
+    for expr in reads[0].index_exprs:
+        par_hits: List[Tuple[str, int]] = []
+        red_hits: List[Tuple[str, int]] = []
+
+        for p in loop.parallel_vars:
+            c = _infer_linear_coeff(expr, p)
+            if c is not None and c > 0:
+                par_hits.append((p, c))
+
+        for r in loop.reduction_vars:
+            c = _infer_linear_coeff(expr, r)
+            if c is not None and c > 0:
+                red_hits.append((r, c))
+
+        if len(par_hits) == 1 and len(red_hits) == 1:
+            axes.append((par_hits[0][1], red_hits[0][1]))
+
+    if len(axes) < 2:
+        raise EmissionError(
+            f"Convolution attr policy failure for '{op_name}': "
+            "cannot infer two spatial stride/dilation axes from input access expressions."
+        )
+
+    (stride_h, dilation_h), (stride_w, dilation_w) = axes[0], axes[1]
+    return stride_h, dilation_h, stride_w, dilation_w
 
 
 # ---------------------------------------------------------------------------
@@ -232,18 +356,17 @@ class LinalgEmitter:
     def _emit_transpose(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [4, 4])
-        B_shape = shapes.get(out, [A_shape[1], A_shape[0]])
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
 
         # Infer permutation from access pattern
         perm = self._infer_transpose_perm(loop, len(A_shape))
+        self._validate_transpose_perm(perm, A_shape, B_shape, sketch.name)
         perm_str = "[" + ", ".join(str(p) for p in perm) + "]"
 
         return (
@@ -257,21 +380,62 @@ class LinalgEmitter:
         )
 
     def _infer_transpose_perm(self, loop: LoopNestInfo, rank: int) -> List[int]:
-        """Infer the transposition permutation from access patterns."""
-        if loop.writes:
-            w = loop.writes[0]
-            # The output indices tell us how the indices are permuted
-            # e.g., ['j', 'i'] for a 2D transpose → perm [1, 0]
-            all_ivs = loop.induction_vars
-            perm = []
-            for expr in w.index_exprs:
-                for i, iv in enumerate(all_ivs):
-                    if iv in expr:
-                        perm.append(i)
-                        break
-            if len(perm) == rank:
-                return perm
-        return list(range(rank - 1, -1, -1))  # default: reverse all dims
+        """Infer transpose permutation strictly from output index order."""
+        if not loop.writes:
+            raise EmissionError("Cannot infer transpose permutation: no write access pattern found.")
+
+        w = loop.writes[0]
+        if len(w.index_exprs) != rank:
+            raise EmissionError(
+                "Cannot infer transpose permutation: output index rank does not match input rank. "
+                f"Expected {rank}, found {len(w.index_exprs)}."
+            )
+
+        all_ivs = loop.induction_vars
+        iv_to_pos = {iv: i for i, iv in enumerate(all_ivs)}
+        perm: List[int] = []
+
+        for expr in w.index_exprs:
+            token = expr.strip()
+            if token not in iv_to_pos:
+                raise EmissionError(
+                    "Cannot infer transpose permutation: ambiguous output index expression "
+                    f"'{expr}'. Expected direct IV references only."
+                )
+            perm.append(iv_to_pos[token])
+
+        return perm
+
+    def _validate_transpose_perm(
+        self,
+        perm: List[int],
+        a_shape: List[int],
+        b_shape: List[int],
+        op_name: str,
+    ) -> None:
+        rank = len(a_shape)
+        if len(b_shape) != rank:
+            raise EmissionError(
+                f"Invalid output rank for '{op_name}'. Expected rank {rank}, got {len(b_shape)}."
+            )
+
+        if len(perm) != rank:
+            raise EmissionError(
+                f"Invalid transpose permutation for '{op_name}'. Expected length {rank}, got {len(perm)}."
+            )
+
+        if sorted(perm) != list(range(rank)):
+            raise EmissionError(
+                f"Invalid transpose permutation for '{op_name}': {perm}. "
+                "Permutation must contain each dimension index exactly once."
+            )
+
+        expected_b = [a_shape[p] for p in perm]
+        if expected_b != b_shape:
+            raise EmissionError(
+                f"Transpose permutation does not match output shape for '{op_name}'. "
+                f"Input shape {a_shape}, permutation {perm}, expected output {expected_b}, got {b_shape}."
+            )
 
     def _emit_dot(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
@@ -386,6 +550,13 @@ class LinalgEmitter:
         I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
         K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
 
+        out_w_iv = _require_iv(loop.parallel_vars, 1, "parallel", sketch.name)
+        ker_w_iv = _require_iv(loop.reduction_vars, 0, "reduction", sketch.name)
+        i_expr_w = _find_read_access_expr(loop, I_name, 1, sketch.name)
+        stride_w, dilation_w = _infer_stride_dilation_from_expr(
+            i_expr_w, out_w_iv, ker_w_iv, sketch.name, "w"
+        )
+
         # Infer shapes from bounds
         ivs = loop.induction_vars
         bounds = loop.bounds
@@ -405,8 +576,8 @@ class LinalgEmitter:
         return (
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}, %O: {O_type}) {{\n"
             f"    linalg.conv_1d_ncw_fcw\n"
-            f"      {{dilations = dense<1> : tensor<1xi64>,\n"
-            f"       strides   = dense<1> : tensor<1xi64>}}\n"
+            f"      {{dilations = dense<{dilation_w}> : tensor<1xi64>,\n"
+            f"       strides   = dense<{stride_w}> : tensor<1xi64>}}\n"
             f"      ins(%I, %K : {I_type}, {K_type})\n"
             f"      outs(%O : {O_type})\n"
             f"    return\n"
@@ -421,6 +592,13 @@ class LinalgEmitter:
 
         I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
         K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+
+        out_w_iv = _require_iv(loop.parallel_vars, 1, "parallel", sketch.name)
+        ker_w_iv = _require_iv(loop.reduction_vars, 0, "reduction", sketch.name)
+        i_expr_w = _find_read_access_expr(loop, I_name, 1, sketch.name)
+        stride_w, dilation_w = _infer_stride_dilation_from_expr(
+            i_expr_w, out_w_iv, ker_w_iv, sketch.name, "w"
+        )
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -443,8 +621,8 @@ class LinalgEmitter:
         return (
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}, %O: {O_type}) {{\n"
             f"    linalg.conv_1d_nwc_wcf\n"
-            f"      {{dilations = dense<1> : tensor<1xi64>,\n"
-            f"       strides   = dense<1> : tensor<1xi64>}}\n"
+            f"      {{dilations = dense<{dilation_w}> : tensor<1xi64>,\n"
+            f"       strides   = dense<{stride_w}> : tensor<1xi64>}}\n"
             f"      ins(%I, %K : {I_type}, {K_type})\n"
             f"      outs(%O : {O_type})\n"
             f"    return\n"
@@ -459,6 +637,10 @@ class LinalgEmitter:
 
         I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
         K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+
+        stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
+            loop, I_name, sketch.name
+        )
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -481,8 +663,8 @@ class LinalgEmitter:
         return (
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}, %O: {O_type}) {{\n"
             f"    linalg.conv_2d\n"
-            f"      {{dilations = dense<1> : tensor<2xi64>,\n"
-            f"       strides   = dense<1> : tensor<2xi64>}}\n"
+            f"      {{dilations = dense<[{dilation_h}, {dilation_w}]> : tensor<2xi64>,\n"
+            f"       strides   = dense<[{stride_h}, {stride_w}]> : tensor<2xi64>}}\n"
             f"      ins(%I, %K : {I_type}, {K_type})\n"
             f"      outs(%O : {O_type})\n"
             f"    return\n"
@@ -497,6 +679,10 @@ class LinalgEmitter:
 
         I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
         K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+
+        stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
+            loop, I_name, sketch.name
+        )
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -522,8 +708,8 @@ class LinalgEmitter:
         return (
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}, %O: {O_type}) {{\n"
             f"    linalg.conv_2d_nhwc_hwcf\n"
-            f"      {{dilations = dense<1> : tensor<2xi64>,\n"
-            f"       strides   = dense<1> : tensor<2xi64>}}\n"
+            f"      {{dilations = dense<[{dilation_h}, {dilation_w}]> : tensor<2xi64>,\n"
+            f"       strides   = dense<[{stride_h}, {stride_w}]> : tensor<2xi64>}}\n"
             f"      ins(%I, %K : {I_type}, {K_type})\n"
             f"      outs(%O : {O_type})\n"
             f"    return\n"
@@ -538,6 +724,10 @@ class LinalgEmitter:
 
         I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
         K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+
+        stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
+            loop, I_name, sketch.name
+        )
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -563,8 +753,8 @@ class LinalgEmitter:
         return (
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}, %O: {O_type}) {{\n"
             f"    linalg.conv_2d_nchw_fchw\n"
-            f"      {{dilations = dense<1> : tensor<2xi64>,\n"
-            f"       strides   = dense<1> : tensor<2xi64>}}\n"
+            f"      {{dilations = dense<[{dilation_h}, {dilation_w}]> : tensor<2xi64>,\n"
+            f"       strides   = dense<[{stride_h}, {stride_w}]> : tensor<2xi64>}}\n"
             f"      ins(%I, %K : {I_type}, {K_type})\n"
             f"      outs(%O : {O_type})\n"
             f"    return\n"
@@ -988,6 +1178,10 @@ class StableHLOEmitter:
         IC = _bound_size(bounds, red, 2) if len(red) > 2 else 1
         IH, IW = OH + KH - 1, OW + KW - 1
 
+        stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
+            loop, I_name, sketch.name
+        )
+
         I_shape = shapes.get(I_name, [N, IH, IW, IC])
         K_shape = shapes.get(K_name, [KH, KW, IC, OC])
         O_shape = shapes.get(out, [N, OH, OW, OC])
@@ -1000,8 +1194,8 @@ class StableHLOEmitter:
             f"  func.func @{name}(%I: {I_type}, %K: {K_type}) -> {O_type} {{\n"
             f"    %result = stablehlo.convolution(%I, %K)\n"
             f"      dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],\n"
-            f"      window = {{stride = [1, 1], pad = [[0, 0], [0, 0]],\n"
-            f"                lhs_dilate = [1, 1], rhs_dilate = [1, 1]}}\n"
+            f"      window = {{stride = [{stride_h}, {stride_w}], pad = [[0, 0], [0, 0]],\n"
+            f"                lhs_dilate = [1, 1], rhs_dilate = [{dilation_h}, {dilation_w}]}}\n"
             f"      : ({I_type}, {K_type}) -> {O_type}\n"
             f"    return %result : {O_type}\n"
             f"  }}"
