@@ -42,6 +42,25 @@ class ComputeOp:
 
 
 @dataclass
+class ParsingWarning:
+    """A diagnostic warning/error from the parser with contextual information."""
+
+    level: str  # 'debug', 'warning', 'error'
+    location: str  # Parser method name or construct (e.g., '_parse_func_declaration')
+    reason: str  # Why the parse failed (e.g., "missing closing paren")
+    input_snippet: str  # Up to 80 chars of problematic input
+    guidance: Optional[str] = None  # Optional hint for the user
+
+    def __str__(self) -> str:
+        msg = f"{self.level.upper()} at {self.location}:\n"
+        msg += f"  Input: {self.input_snippet}\n"
+        msg += f"  Reason: {self.reason}"
+        if self.guidance:
+            msg += f"\n  Guidance: {self.guidance}"
+        return msg
+
+
+@dataclass
 class LoopNestInfo:
     """Full semantic description of an extracted loop nest."""
 
@@ -60,6 +79,11 @@ class LoopNestInfo:
     func_args: Dict[str, str]
     has_accumulation: bool
     accumulation_op: Optional[str]
+    diagnostics: List[ParsingWarning] = None  # type: ignore
+
+    def __post_init__(self) -> None:
+        if self.diagnostics is None:
+            self.diagnostics = []
 
     @property
     def output_tensor(self) -> Optional[str]:
@@ -235,6 +259,14 @@ def _normalize_index(idx: str, iv_map: Dict[str, str]) -> str:
     return " ".join(expr.split())
 
 
+def _diagnostic_snippet(text: str, max_len: int = 80) -> str:
+    """Create a truncated diagnostic snippet of input text with ellipsis if needed."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return f'"{text}"'
+    return f'"{text[:max_len]}..."'
+
+
 class AffineExtractor:
     """
     Parse MLIR Affine/SCF IR text and extract LoopNestInfo.
@@ -243,11 +275,14 @@ class AffineExtractor:
     syntax is validated through the MLIR parser before extraction.
     """
 
-    def __init__(self, validate_with_mlir: bool = True):
+    def __init__(self, validate_with_mlir: bool = True, verbose_diagnostics: bool = False):
         self.validate_with_mlir = validate_with_mlir
+        self.verbose_diagnostics = verbose_diagnostics
+        self.diagnostics: List[ParsingWarning] = []
 
     def extract(self, mlir_text: str) -> LoopNestInfo:
         text = mlir_text.replace("\r\n", "\n").replace("\r", "\n")
+        self.diagnostics = []  # Reset diagnostics for new extraction
 
         self._validate_mlir_syntax(text)
 
@@ -283,6 +318,7 @@ class AffineExtractor:
             func_args=func_args,
             has_accumulation=has_accum,
             accumulation_op=accum_op,
+            diagnostics=self.diagnostics,
         )
 
     def _validate_mlir_syntax(self, text: str) -> None:
@@ -305,6 +341,27 @@ class AffineExtractor:
 
         raise ValueError(f"MLIR syntax validation failed: {last_error}")
 
+    def _add_diagnostic(
+        self,
+        level: str,
+        location: str,
+        reason: str,
+        input_text: str,
+        guidance: Optional[str] = None,
+    ) -> None:
+        """Log a diagnostic warning/error with context."""
+        snippet = _diagnostic_snippet(input_text)
+        warning = ParsingWarning(
+            level=level,
+            location=location,
+            reason=reason,
+            input_snippet=snippet,
+            guidance=guidance,
+        )
+        # Only include debug-level logs if verbose_diagnostics is True
+        if level != 'debug' or self.verbose_diagnostics:
+            self.diagnostics.append(warning)
+
     def _iter_clean_lines(self, text: str) -> List[str]:
         lines: List[str] = []
         for raw in text.split("\n"):
@@ -317,16 +374,39 @@ class AffineExtractor:
         marker = "func.func @"
         idx = text.find(marker)
         if idx < 0:
+            self._add_diagnostic(
+                'error',
+                '_parse_func_declaration',
+                'Function marker not found',
+                text[:100],
+                guidance="Expected format: 'func.func @name(...) { ... }'",
+            )
             return "unknown", {}
 
         name_start = idx + len(marker)
         name_end = text.find("(", name_start)
         if name_end < 0:
+            func_line = text[idx:idx+200]
+            self._add_diagnostic(
+                'error',
+                '_parse_func_declaration',
+                'No opening paren for function arguments',
+                func_line,
+                guidance="Expected format: 'func.func @name(...)'",
+            )
             return "unknown", {}
 
         func_name = text[name_start:name_end].strip().split()[0]
         args_end = _find_matching(text, name_end, "(", ")")
         if args_end < 0:
+            func_line = text[idx:idx+200]
+            self._add_diagnostic(
+                'error',
+                '_parse_func_declaration',
+                'No closing paren for function arguments',
+                func_line,
+                guidance="Check for unmatched parentheses in argument list",
+            )
             return func_name, {}
 
         args_str = text[name_end + 1:args_end].strip()
@@ -361,7 +441,23 @@ class AffineExtractor:
 
             literal_part = rhs[marker_idx + len(marker):].strip()
             literal = literal_part.split(":", 1)[0].strip()
-            if not literal or literal.startswith("dense<"):
+            if not literal:
+                self._add_diagnostic(
+                    'warning',
+                    '_extract_constants',
+                    f'Missing constant literal for {ssa_name}',
+                    line,
+                )
+                continue
+            
+            if literal.startswith("dense<"):
+                self._add_diagnostic(
+                    'warning',
+                    '_extract_constants',
+                    f'Non-scalar constant (dense tensor) for {ssa_name}',
+                    line,
+                    guidance='Only scalar arith.constant values are supported',
+                )
                 continue
 
             try:
@@ -370,6 +466,13 @@ class AffineExtractor:
                 else:
                     const_map[ssa_name] = int(literal, 10)
             except ValueError:
+                self._add_diagnostic(
+                    'warning',
+                    '_extract_constants',
+                    f'Unparseable constant literal for {ssa_name}',
+                    line,
+                    guidance='Expected integer or float literal',
+                )
                 continue
 
         return const_map
@@ -435,12 +538,28 @@ class AffineExtractor:
         bounds_raw: Dict[str, Tuple[str, str]] = {}
         loop_order: List[str] = []
         iv_map: Dict[str, str] = {}
+        has_affine = False
+        has_scf = False
 
         for line in self._iter_clean_lines(text):
             parsed = self._parse_affine_for(line)
             if parsed is None and not induction_vars:
                 parsed = self._parse_scf_for(line)
+                if parsed is not None:
+                    has_scf = True
+            elif parsed is not None:
+                has_affine = True
+            
             if parsed is None:
+                # Check if this looks like a loop-related line that failed parsing
+                if 'for ' in line and ('=' in line or ' to ' in line):
+                    self._add_diagnostic(
+                        'debug',
+                        '_parse_loop_structure',
+                        'Unrecognized loop syntax',
+                        line,
+                        guidance='Expected "affine.for" or "scf.for"',
+                    )
                 continue
 
             iv_ssa, lb, ub = parsed
@@ -449,6 +568,16 @@ class AffineExtractor:
             loop_order.append(short)
             bounds_raw[short] = (lb, ub)
             iv_map[iv_ssa] = short
+
+        # Check for mixed affine/scf pattern (P-06 must-remove case)
+        if has_affine and has_scf:
+            self._add_diagnostic(
+                'warning',
+                '_parse_loop_structure',
+                'Mixed affine.for and scf.for loops detected',
+                text[:150],
+                guidance='Only the first scf.for will be parsed (mixed nests not yet fully supported)',
+            )
 
         return induction_vars, bounds_raw, loop_order, iv_map
 
@@ -472,15 +601,36 @@ class AffineExtractor:
         body = rhs[kw_idx + len(keyword):].strip()
         lb = body.find("[")
         if lb < 0:
+            self._add_diagnostic(
+                'warning',
+                '_parse_load',
+                f'No opening bracket in load operands',
+                line,
+            )
             return None
         rb = _find_matching(body, lb, "[", "]")
         if rb < 0:
+            self._add_diagnostic(
+                'warning',
+                '_parse_load',
+                f'No closing bracket in load indices',
+                line,
+            )
             return None
 
         tensor = body[:lb].strip()
         indices_raw = body[lb + 1:rb]
         after = body[rb + 1:].strip()
         type_str = after.split(":", 1)[1].strip() if ":" in after else ""
+
+        if not type_str:
+            self._add_diagnostic(
+                'warning',
+                '_parse_load',
+                f'Missing type annotation for load',
+                line,
+                guidance='Expected format: %result = affine.load %tensor[...] : memref<...>',
+            )
 
         shape, etype = _parse_memref_type(type_str)
         idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
@@ -509,21 +659,49 @@ class AffineExtractor:
         body = line[kw_idx + len(keyword):].strip()
         comma_idx = body.find(",")
         if comma_idx < 0:
+            self._add_diagnostic(
+                'warning',
+                '_parse_store',
+                f'No comma separator in store operands',
+                line,
+                guidance='Expected format: %value, %tensor[...]',
+            )
             return None
 
         val_ssa = body[:comma_idx].strip()
         rest = body[comma_idx + 1:].strip()
         lb = rest.find("[")
         if lb < 0:
+            self._add_diagnostic(
+                'warning',
+                '_parse_store',
+                f'No opening bracket in store tensor',
+                line,
+            )
             return None
         rb = _find_matching(rest, lb, "[", "]")
         if rb < 0:
+            self._add_diagnostic(
+                'warning',
+                '_parse_store',
+                f'No closing bracket in store indices',
+                line,
+            )
             return None
 
         tensor = rest[:lb].strip()
         indices_raw = rest[lb + 1:rb]
         after = rest[rb + 1:].strip()
         type_str = after.split(":", 1)[1].strip() if ":" in after else ""
+
+        if not type_str:
+            self._add_diagnostic(
+                'warning',
+                '_parse_store',
+                f'Missing type annotation for store',
+                line,
+                guidance='Expected format: affine.store %value, %tensor[...] : memref<...>',
+            )
 
         shape, etype = _parse_memref_type(type_str)
         idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
@@ -551,24 +729,53 @@ class AffineExtractor:
                 parsed = self._parse_load(line, "affine.load", True, iv_map)
                 if parsed is not None:
                     reads.append(parsed)
+                elif "affine.load" in line:
+                    # Parse attempt failed; diagnostic already logged in _parse_load
+                    self._add_diagnostic(
+                        'warning',
+                        '_collect_accesses',
+                        'Failed to parse affine.load operation',
+                        line,
+                    )
                 continue
 
             if "memref.load" in line and "=" in line:
                 parsed = self._parse_load(line, "memref.load", False, iv_map)
                 if parsed is not None:
                     reads.append(parsed)
+                elif "memref.load" in line:
+                    self._add_diagnostic(
+                        'warning',
+                        '_collect_accesses',
+                        'Failed to parse memref.load operation',
+                        line,
+                    )
                 continue
 
             if "affine.store" in line:
                 parsed = self._parse_store(line, "affine.store", True, iv_map)
                 if parsed is not None:
                     writes.append(parsed)
+                elif "affine.store" in line:
+                    self._add_diagnostic(
+                        'warning',
+                        '_collect_accesses',
+                        'Failed to parse affine.store operation',
+                        line,
+                    )
                 continue
 
             if "memref.store" in line:
                 parsed = self._parse_store(line, "memref.store", False, iv_map)
                 if parsed is not None:
                     writes.append(parsed)
+                elif "memref.store" in line:
+                    self._add_diagnostic(
+                        'warning',
+                        '_collect_accesses',
+                        'Failed to parse memref.store operation',
+                        line,
+                    )
 
         return reads, writes
 
@@ -608,6 +815,13 @@ class AffineExtractor:
                 try:
                     value = float(literal)
                 except ValueError:
+                    self._add_diagnostic(
+                        'warning',
+                        '_collect_compute_ops',
+                        f'Unparseable constant literal, defaulting to 0.0',
+                        line,
+                        guidance=f'Expected float literal, got: {literal}',
+                    )
                     value = 0.0
                 ops.append(
                     ComputeOp(
@@ -629,6 +843,14 @@ class AffineExtractor:
                 continue
 
             operands = [o.strip() for o in _split_top_level(operands_part, ",") if o.strip()]
+            if len(operands) > 2:
+                self._add_diagnostic(
+                    'warning',
+                    '_collect_compute_ops',
+                    f'N-ary operation truncated to first 2 operands',
+                    line,
+                    guidance=f'Found {len(operands)} operands, using first 2 for binary {op_type}',
+                )
             ops.append(ComputeOp(op_type=op_type, operands=operands[:2], result=result_ssa))
 
         return ops
@@ -658,6 +880,13 @@ class AffineExtractor:
 
     def _dominant_element_type(self, tensor_types: Dict[str, str]) -> str:
         if not tensor_types:
+            self._add_diagnostic(
+                'warning',
+                '_dominant_element_type',
+                'No tensor element types discovered, defaulting to f32',
+                '',
+                guidance='Check that tensor arguments have proper type annotations',
+            )
             return "f32"
         return Counter(tensor_types.values()).most_common(1)[0][0]
 
@@ -667,6 +896,13 @@ class AffineExtractor:
         writes: List[AccessPattern],
     ) -> Tuple[List[str], List[str]]:
         if not writes:
+            self._add_diagnostic(
+                'warning',
+                '_classify_iv_roles',
+                'No writes found; classifying all induction variables as parallel',
+                '',
+                guidance='This is a conservative fallback for kernels with no explicit output writes',
+            )
             return [], list(induction_vars)
 
         write_idx_pool = set()
@@ -700,8 +936,16 @@ class AffineExtractor:
             if op.result == write_ssa and op.op_type in ("addf", "addi"):
                 return True, op.op_type
 
+        # Fallback: any add op is treated as accumulation
         for op in compute_ops:
             if op.op_type in ("addf", "addi"):
+                self._add_diagnostic(
+                    'debug',
+                    '_detect_accumulation',
+                    'Accumulation detected from any add op (not directly writing to output)',
+                    '',
+                    guidance='Aggressive heuristic: any addf/addi treated as reduction',
+                )
                 return True, op.op_type
 
         return False, None

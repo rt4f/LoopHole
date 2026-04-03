@@ -27,6 +27,10 @@ from loophole.affine_extractor import LoopNestInfo
 from loophole.sketch_library import ComputePayloadType, OperationSketch
 
 
+class EmissionError(ValueError):
+    """Raised when emitter cannot produce a valid artifact for a sketch."""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -117,6 +121,11 @@ class LinalgEmitter:
         if handler_method and hasattr(self, handler_method):
             func_body = getattr(self, handler_method)(sketch, loop, name)
         else:
+            if sketch.name.startswith("linalg."):
+                raise EmissionError(
+                    f"Unsupported Linalg sketch '{sketch.name}' for emission. "
+                    "Add a dedicated emitter handler or map this sketch explicitly."
+                )
             func_body = self._emit_generic(sketch, loop, name)
 
         lines = [
@@ -834,7 +843,10 @@ class StableHLOEmitter:
         elif "reduce" in sketch.name:
             body = self._emit_reduce(sketch, loop, name, et)
         else:
-            body = self._emit_dot_general(sketch, loop, name, et)
+            raise EmissionError(
+                f"Unsupported StableHLO sketch '{sketch.name}' for emission. "
+                "Expected one of dot_general/convolution/reduce families."
+            )
 
         lines = [
             "// LoopHole: Automatically lifted from scalar loop nest (StableHLO target)",

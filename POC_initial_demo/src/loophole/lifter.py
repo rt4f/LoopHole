@@ -56,6 +56,7 @@ class LiftResult:
     loop_info: Optional[LoopNestInfo] = None
     candidates_tried: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    parser_diagnostics: List = field(default_factory=list)  # List[ParsingWarning]
 
     @property
     def success(self) -> bool:
@@ -155,6 +156,7 @@ class Lifter:
                 total_elapsed_ms=0.0,
                 target_dialect=self.target,
                 error=f"Parse error: {exc}",
+                parser_diagnostics=[],
             )
 
         if self.verbose:
@@ -179,6 +181,7 @@ class Lifter:
                 target_dialect=self.target,
                 loop_info=loop,
                 error="No sketch candidates passed structural pre-filter.",
+                parser_diagnostics=loop.diagnostics,
             )
 
         # Stage 3: verify top-k with Z3
@@ -199,12 +202,32 @@ class Lifter:
                 loop_info=loop,
                 candidates_tried=[c[0].name for c in candidates],
                 error=f"All {len(candidates)} candidates failed Z3 verification.",
+                parser_diagnostics=loop.diagnostics,
             )
 
         sketch, report, sympy_conf = best_result
 
         # Stage 4: emit MLIR
-        emitted = self._emit(sketch, loop)
+        try:
+            emitted = self._emit(sketch, loop)
+        except Exception as exc:
+            return LiftResult(
+                func_name=loop.func_name,
+                matched_sketch=sketch,
+                sketch_name=sketch.name,
+                emitted_mlir=None,
+                verification=report,
+                sympy_confidence=sympy_conf,
+                total_elapsed_ms=total_ms,
+                target_dialect=self.target,
+                loop_info=loop,
+                candidates_tried=[c[0].name for c in candidates],
+                error=(
+                    f"Emission error while generating '{sketch.name}': {exc}. "
+                    "Check extracted shapes/types and sketch-emitter mapping."
+                ),
+                parser_diagnostics=loop.diagnostics,
+            )
 
         return LiftResult(
             func_name=loop.func_name,
@@ -217,6 +240,7 @@ class Lifter:
             target_dialect=self.target,
             loop_info=loop,
             candidates_tried=[c[0].name for c in candidates],
+            parser_diagnostics=loop.diagnostics,
         )
 
     def lift_many(self, mlir_texts: List[str]) -> List[LiftResult]:

@@ -3,6 +3,7 @@ Unit tests for the MLIR emitter — verifies that emitted MLIR text is well-form
 """
 import pytest
 import re
+from copy import deepcopy
 from loophole.affine_extractor import AffineExtractor
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.emitter import LinalgEmitter, StableHLOEmitter
@@ -83,6 +84,33 @@ class TestLinalgEmitter:
         result = linalg_emitter.emit(dot_sketches[0], info)
         assert "linalg" in result.lower()
         assert len(result) > 0
+
+    def test_emit_matmul_detects_guessed_shape_fallback(self, extractor, linalg_emitter):
+        """Detect shape fallback path: missing tensor metadata falls back to 4x4."""
+        info = extractor.extract(MATMUL_MLIR)
+        info = deepcopy(info)
+        info.tensor_shapes = {}
+
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+
+        assert "memref<4x4xf32>" in result
+
+    def test_emit_transpose_detects_reverse_permutation_fallback(self, extractor, linalg_emitter):
+        """Detect permutation fallback path: incomplete inference falls back to reverse dims."""
+        info = extractor.extract(TRANSPOSE_2D_MLIR)
+        info = deepcopy(info)
+
+        # Force rank-3 input but keep 2-D write indexing, so inference is incomplete.
+        info.tensor_shapes["%A"] = [2, 3, 4]
+        info.tensor_shapes["%B"] = [4, 3, 2]
+
+        transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
+        if not transpose_sketches:
+            pytest.skip("No transpose sketch")
+        result = linalg_emitter.emit(transpose_sketches[0], info)
+
+        assert "permutation = [2, 1, 0]" in result
 
 
 class TestStableHLOEmitter:

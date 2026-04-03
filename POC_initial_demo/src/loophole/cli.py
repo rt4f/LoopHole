@@ -294,7 +294,7 @@ def _print_lift_result(
 
     # Determine status color
     if result.success:
-        status = "[green bold]✓ FORMALLY PROVED — EQUIVALENT[/green bold]"
+        status = "[green bold]FORMALLY PROVED - EQUIVALENT[/green bold]"
         border = "green"
     elif result.partial_success:
         v = result.verification
@@ -302,7 +302,7 @@ def _print_lift_result(
         status = f"[yellow bold]~ MATCHED (Z3: {vstr})[/yellow bold]"
         border = "yellow"
     else:
-        status = "[red]✗ LIFT FAILED[/red]"
+        status = "[red]LIFT FAILED[/red]"
         border = "red"
 
     header_lines = [
@@ -426,7 +426,7 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
     console.print(table)
 
     if found:
-        console.print("\n[green bold]✓ Equivalence formally proved.[/green bold]")
+        console.print("\n[green bold]Equivalence formally proved.[/green bold]")
     else:
         console.print("\n[yellow]No sketch was formally proved equivalent.[/yellow]")
 
@@ -617,20 +617,28 @@ def demo(target: str, verbose: bool):
 
         # Print summary line
         if result.success:
-            icon = "[green]✓[/green]"
+            icon = "[green]OK[/green]"
             z3_str = f"[green]{result.verification.result.value}[/green] in {result.verification.elapsed_ms:.0f}ms"
         elif result.partial_success:
             icon = "[yellow]~[/yellow]"
             v = result.verification
             z3_str = f"[yellow]{v.result.value if v else 'N/A'}[/yellow]"
         else:
-            icon = "[red]✗[/red]"
+            icon = "[red]FAIL[/red]"
             z3_str = "[red]FAIL[/red]"
 
         console.print(
             f"  {icon} {fixture_name} → [magenta]{result.sketch_name or 'no match'}[/magenta] "
             f"| Z3: {z3_str} | conf: {result.sympy_confidence:.2f} | {result.total_elapsed_ms:.0f}ms"
         )
+
+        # Print parser diagnostics if any exist
+        if result.parser_diagnostics:
+            for diag in result.parser_diagnostics:
+                level_color = {"error": "red", "warning": "yellow", "debug": "cyan"}.get(diag.level, "white")
+                console.print(f"    [{level_color}]{diag.level.upper()}[/{level_color}] {diag.location}: {diag.reason}")
+                if diag.guidance:
+                    console.print(f"      → {diag.guidance}")
 
         if result.emitted_mlir:
             syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=False)
@@ -675,3 +683,7 @@ def demo(target: str, verbose: bool):
         f"[green]{proved}/{len(results_data)} formally proved[/green] | "
         f"[yellow]{partial} partial (Z3 timeout)[/yellow]"
     )
+
+
+if __name__ == "__main__":
+    main()
