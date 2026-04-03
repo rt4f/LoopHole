@@ -64,3 +64,20 @@ class TestMatmulLiftPipeline:
         assert isinstance(result, LiftResult)
         # Even if Z3 times out, SymPy match should still give partial_success
         assert result.success or result.partial_success
+
+    def test_lift_fails_on_missing_shape_metadata(self):
+        """B-05: emission must fail when required tensor shape metadata is missing."""
+        lifter = Lifter(target="linalg", z3_timeout_ms=5000)
+        original_emit = lifter._emit
+
+        def _emit_without_shapes(sketch, loop_info):
+            loop_info.tensor_shapes = {}
+            return original_emit(sketch, loop_info)
+
+        lifter._emit = _emit_without_shapes  # type: ignore[assignment]
+        result = lifter.lift(MATMUL_MLIR)
+
+        assert not result.success
+        assert result.error is not None
+        assert "Emission error while generating" in result.error
+        assert "Missing tensor_shapes metadata" in result.error

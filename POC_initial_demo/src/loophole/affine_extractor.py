@@ -11,11 +11,17 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
+import re
 
 try:
     from mlir import ir as _mlir_ir
 except Exception:
     _mlir_ir = None
+
+try:
+    import sympy as _sympy
+except Exception:
+    _sympy = None
 
 
 @dataclass
@@ -251,11 +257,58 @@ def _parse_memref_type(type_str: str) -> Tuple[List[int], str]:
     return shape, elem_type
 
 
-def _normalize_index(idx: str, iv_map: Dict[str, str]) -> str:
+def _apply_known_constants(
+    expr: str,
+    const_map: Optional[Dict[str, Union[int, float]]] = None,
+) -> str:
+    """Substitute known constant SSA names (for example %c1) with literal values."""
+    if not const_map:
+        return expr
+
+    out = expr
+    for name, value in const_map.items():
+        value_str = str(int(value) if isinstance(value, (int, float)) and float(value).is_integer() else value)
+        # Replace both %name and stripped name forms using token boundaries.
+        out = _replace_token_boundary(out, str(name), value_str)
+        out = _replace_token_boundary(out, str(name).lstrip("%"), value_str)
+    return out
+
+
+def _canonicalize_index_expr(expr: str) -> str:
+    """
+    Canonicalize arithmetic index expressions.
+
+    Uses SymPy when available to normalize reordered/parenthesized equivalent forms.
+    Falls back to whitespace normalization when symbolic parsing is unavailable.
+    """
+    expr = " ".join(expr.split())
+    if not expr:
+        return expr
+
+    if _sympy is None:
+        return expr
+
+    try:
+        symbol_names = set(re.findall(r"\b[a-zA-Z_]\w*\b", expr))
+        locals_map = {name: _sympy.Symbol(name, integer=True) for name in symbol_names}
+        parsed = _sympy.sympify(expr, locals=locals_map)
+        canonical = _sympy.sstr(_sympy.expand(parsed), order="lex")
+        return " ".join(canonical.split())
+    except Exception:
+        return expr
+
+
+def _normalize_index(
+    idx: str,
+    iv_map: Dict[str, str],
+    const_map: Optional[Dict[str, Union[int, float]]] = None,
+) -> str:
     expr = idx.strip()
     for ssa_name, short_name in sorted(iv_map.items(), key=lambda item: len(item[0]), reverse=True):
         expr = _replace_token_boundary(expr, ssa_name, short_name)
+    expr = _apply_known_constants(expr, const_map)
     expr = _strip_ssa_percent(expr)
+    expr = _canonicalize_index_expr(expr)
     return " ".join(expr.split())
 
 
@@ -289,7 +342,7 @@ class AffineExtractor:
         func_name, func_args = self._parse_func_declaration(text)
         const_map = self._extract_constants(text)
         induction_vars, bounds_raw, loop_order, iv_map = self._parse_loop_structure(text)
-        reads, writes = self._collect_accesses(text, iv_map)
+        reads, writes = self._collect_accesses(text, iv_map, const_map)
         compute_ops = self._collect_compute_ops(text)
         tensor_shapes, tensor_types = self._resolve_tensor_metadata(func_args, reads, writes)
         element_type = self._dominant_element_type(tensor_types)
@@ -543,7 +596,7 @@ class AffineExtractor:
 
         for line in self._iter_clean_lines(text):
             parsed = self._parse_affine_for(line)
-            if parsed is None and not induction_vars:
+            if parsed is None:
                 parsed = self._parse_scf_for(line)
                 if parsed is not None:
                     has_scf = True
@@ -569,14 +622,14 @@ class AffineExtractor:
             bounds_raw[short] = (lb, ub)
             iv_map[iv_ssa] = short
 
-        # Check for mixed affine/scf pattern (P-06 must-remove case)
+        # Mixed affine/scf nests are supported; keep a debug diagnostic for traceability.
         if has_affine and has_scf:
             self._add_diagnostic(
-                'warning',
+                'debug',
                 '_parse_loop_structure',
                 'Mixed affine.for and scf.for loops detected',
                 text[:150],
-                guidance='Only the first scf.for will be parsed (mixed nests not yet fully supported)',
+                guidance='Mixed loop nest parsed with preserved source order',
             )
 
         return induction_vars, bounds_raw, loop_order, iv_map
@@ -587,6 +640,7 @@ class AffineExtractor:
         keyword: str,
         is_affine: bool,
         iv_map: Dict[str, str],
+        const_map: Optional[Dict[str, Union[int, float]]] = None,
     ) -> Optional[AccessPattern]:
         if "=" not in line or keyword not in line:
             return None
@@ -633,7 +687,7 @@ class AffineExtractor:
             )
 
         shape, etype = _parse_memref_type(type_str)
-        idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
+        idx_exprs = [_normalize_index(idx, iv_map, const_map) for idx in _split_top_level(indices_raw, ",")]
 
         return AccessPattern(
             tensor_name=tensor,
@@ -651,6 +705,7 @@ class AffineExtractor:
         keyword: str,
         is_affine: bool,
         iv_map: Dict[str, str],
+        const_map: Optional[Dict[str, Union[int, float]]] = None,
     ) -> Optional[AccessPattern]:
         kw_idx = line.find(keyword)
         if kw_idx < 0:
@@ -704,7 +759,7 @@ class AffineExtractor:
             )
 
         shape, etype = _parse_memref_type(type_str)
-        idx_exprs = [_normalize_index(idx, iv_map) for idx in _split_top_level(indices_raw, ",")]
+        idx_exprs = [_normalize_index(idx, iv_map, const_map) for idx in _split_top_level(indices_raw, ",")]
 
         return AccessPattern(
             tensor_name=tensor,
@@ -720,13 +775,14 @@ class AffineExtractor:
         self,
         text: str,
         iv_map: Dict[str, str],
+        const_map: Optional[Dict[str, Union[int, float]]] = None,
     ) -> Tuple[List[AccessPattern], List[AccessPattern]]:
         reads: List[AccessPattern] = []
         writes: List[AccessPattern] = []
 
         for line in self._iter_clean_lines(text):
             if "affine.load" in line and "=" in line:
-                parsed = self._parse_load(line, "affine.load", True, iv_map)
+                parsed = self._parse_load(line, "affine.load", True, iv_map, const_map)
                 if parsed is not None:
                     reads.append(parsed)
                 elif "affine.load" in line:
@@ -740,7 +796,7 @@ class AffineExtractor:
                 continue
 
             if "memref.load" in line and "=" in line:
-                parsed = self._parse_load(line, "memref.load", False, iv_map)
+                parsed = self._parse_load(line, "memref.load", False, iv_map, const_map)
                 if parsed is not None:
                     reads.append(parsed)
                 elif "memref.load" in line:
@@ -753,7 +809,7 @@ class AffineExtractor:
                 continue
 
             if "affine.store" in line:
-                parsed = self._parse_store(line, "affine.store", True, iv_map)
+                parsed = self._parse_store(line, "affine.store", True, iv_map, const_map)
                 if parsed is not None:
                     writes.append(parsed)
                 elif "affine.store" in line:
@@ -766,7 +822,7 @@ class AffineExtractor:
                 continue
 
             if "memref.store" in line:
-                parsed = self._parse_store(line, "memref.store", False, iv_map)
+                parsed = self._parse_store(line, "memref.store", False, iv_map, const_map)
                 if parsed is not None:
                     writes.append(parsed)
                 elif "memref.store" in line:

@@ -67,6 +67,45 @@ def _map_elem_type(etype: str) -> str:
     return mapping.get(etype, etype)
 
 
+def _require_output_tensor(loop: LoopNestInfo, op_name: str) -> str:
+    out = loop.output_tensor
+    if not out:
+        raise EmissionError(
+            f"Missing output tensor metadata for '{op_name}'. "
+            "Extractor did not identify a writable output tensor."
+        )
+    return out
+
+
+def _require_input_tensor(loop: LoopNestInfo, op_name: str, idx: int) -> str:
+    if idx >= len(loop.input_tensors):
+        raise EmissionError(
+            f"Missing input tensor metadata for '{op_name}'. "
+            f"Expected input at position {idx}, found {len(loop.input_tensors)} input tensors."
+        )
+    return loop.input_tensors[idx]
+
+
+def _require_shape(
+    shapes: Dict[str, List[int]],
+    tensor_name: str,
+    op_name: str,
+    expected_rank: Optional[int] = None,
+) -> List[int]:
+    shape = shapes.get(tensor_name)
+    if not shape:
+        raise EmissionError(
+            f"Missing tensor shape metadata for '{op_name}' tensor '{tensor_name}'. "
+            "Emission requires explicit tensor_shapes from extraction."
+        )
+    if expected_rank is not None and len(shape) != expected_rank:
+        raise EmissionError(
+            f"Invalid tensor rank for '{op_name}' tensor '{tensor_name}'. "
+            f"Expected rank {expected_rank}, got rank {len(shape)}."
+        )
+    return shape
+
+
 # ---------------------------------------------------------------------------
 # Linalg Emitter
 # ---------------------------------------------------------------------------
@@ -106,6 +145,26 @@ class LinalgEmitter:
         "linalg.reduce{arith.maxf}":   "_emit_reduce_max",
     }
 
+    def _validate_required_metadata(self, sketch: OperationSketch, loop: LoopNestInfo) -> None:
+        if not loop.tensor_shapes:
+            raise EmissionError(
+                f"Missing tensor_shapes metadata for '{sketch.name}'. "
+                "Emitter no longer guesses default shapes."
+            )
+
+        if sketch.num_inputs > len(loop.input_tensors):
+            raise EmissionError(
+                f"Missing input tensor metadata for '{sketch.name}'. "
+                f"Expected {sketch.num_inputs} input tensor(s), found {len(loop.input_tensors)}."
+            )
+
+        for idx in range(sketch.num_inputs):
+            in_name = _require_input_tensor(loop, sketch.name, idx)
+            _require_shape(loop.tensor_shapes, in_name, sketch.name)
+
+        out_name = _require_output_tensor(loop, sketch.name)
+        _require_shape(loop.tensor_shapes, out_name, sketch.name)
+
     def emit(
         self,
         sketch: OperationSketch,
@@ -116,6 +175,7 @@ class LinalgEmitter:
         Emit a complete MLIR module containing the lifted function.
         Returns the MLIR text as a string.
         """
+        self._validate_required_metadata(sketch, loop)
         name = func_name or f"lifted_{loop.func_name}"
         handler_method = self._NAMED_OP_HANDLERS.get(sketch.name)
         if handler_method and hasattr(self, handler_method):
@@ -827,12 +887,33 @@ class LinalgEmitter:
 class StableHLOEmitter:
     """Emits MLIR StableHLO dialect code for matched sketches."""
 
+    def _validate_required_metadata(self, sketch: OperationSketch, loop: LoopNestInfo) -> None:
+        if not loop.tensor_shapes:
+            raise EmissionError(
+                f"Missing tensor_shapes metadata for '{sketch.name}'. "
+                "Emitter no longer guesses default shapes."
+            )
+
+        if sketch.num_inputs > len(loop.input_tensors):
+            raise EmissionError(
+                f"Missing input tensor metadata for '{sketch.name}'. "
+                f"Expected {sketch.num_inputs} input tensor(s), found {len(loop.input_tensors)}."
+            )
+
+        for idx in range(sketch.num_inputs):
+            in_name = _require_input_tensor(loop, sketch.name, idx)
+            _require_shape(loop.tensor_shapes, in_name, sketch.name)
+
+        out_name = _require_output_tensor(loop, sketch.name)
+        _require_shape(loop.tensor_shapes, out_name, sketch.name)
+
     def emit(
         self,
         sketch: OperationSketch,
         loop: LoopNestInfo,
         func_name: Optional[str] = None,
     ) -> str:
+        self._validate_required_metadata(sketch, loop)
         name = func_name or f"lifted_{loop.func_name}"
         et = _map_elem_type(loop.element_type)
 

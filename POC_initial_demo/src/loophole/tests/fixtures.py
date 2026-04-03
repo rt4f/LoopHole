@@ -227,6 +227,48 @@ func.func @reduce_sum(%A: memref<4x4xf32>, %B: memref<4xf32>) {
 """
 
 # ---------------------------------------------------------------------------
+# Mixed affine/scf nests for parser hardening (B-03)
+# ---------------------------------------------------------------------------
+
+MIXED_AFFINE_SCF_MATMUL_MLIR = """\
+func.func @mixed_affine_scf_matmul(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  affine.for %i = 0 to 4 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      affine.for %k = 0 to 4 {
+        %a = affine.load %A[%i, %k] : memref<4x4xf32>
+        %b = affine.load %B[%k, %j] : memref<4x4xf32>
+        %c = affine.load %C[%i, %j] : memref<4x4xf32>
+        %mul = arith.mulf %a, %b : f32
+        %add = arith.addf %c, %mul : f32
+        affine.store %add, %C[%i, %j] : memref<4x4xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
+MIXED_SCF_AFFINE_REDUCTION_MLIR = """\
+func.func @mixed_scf_affine_reduction(%A: memref<4x4xf32>, %B: memref<4xf32>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  scf.for %m = %c0 to %c4 step %c1 {
+    affine.for %k = 0 to 4 {
+      %a = affine.load %A[%m, %k] : memref<4x4xf32>
+      %b = affine.load %B[%m] : memref<4xf32>
+      %sum = arith.addf %b, %a : f32
+      affine.store %sum, %B[%m] : memref<4xf32>
+    }
+  }
+  return
+}
+"""
+
+# ---------------------------------------------------------------------------
 # ReLU: B[i,j] = max(A[i,j], 0)
 # ---------------------------------------------------------------------------
 
@@ -239,6 +281,37 @@ func.func @relu(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
       %res = arith.maxf %a, %zero : f32
       affine.store %res, %B[%i, %j] : memref<4x4xf32>
     }
+  }
+  return
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Index expression variation fixtures for normalization (B-04)
+# ---------------------------------------------------------------------------
+
+INDEX_VARIATION_EQ_A_MLIR = """\
+func.func @index_variation_a(%A: memref<16xf32>, %B: memref<16xf32>) {
+  %c0 = arith.constant 0 : index
+  %c8 = arith.constant 8 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  affine.for %i = %c0 to %c8 {
+    %a = affine.load %A[%i + (%c1 + %c2)] : memref<16xf32>
+    affine.store %a, %B[(%i + 3)] : memref<16xf32>
+  }
+  return
+}
+"""
+
+INDEX_VARIATION_EQ_B_MLIR = """\
+func.func @index_variation_b(%A: memref<16xf32>, %B: memref<16xf32>) {
+  %c0 = arith.constant 0 : index
+  %c8 = arith.constant 8 : index
+  %c2 = arith.constant 2 : index
+  affine.for %i = %c0 to %c8 {
+    %a = affine.load %A[%c2 + (1 + %i)] : memref<16xf32>
+    affine.store %a, %B[1 + (2 + %i)] : memref<16xf32>
   }
   return
 }
@@ -266,4 +339,8 @@ ALL_FIXTURES = {
     **DEMO_FIXTURES,
     "matmul_128x128":         MATMUL_128_MLIR,
     "transpose_nonsquare":    TRANSPOSE_NONSQUARE_MLIR,
+  "mixed_affine_scf_matmul": MIXED_AFFINE_SCF_MATMUL_MLIR,
+  "mixed_scf_affine_reduction": MIXED_SCF_AFFINE_REDUCTION_MLIR,
+  "index_variation_eq_a": INDEX_VARIATION_EQ_A_MLIR,
+  "index_variation_eq_b": INDEX_VARIATION_EQ_B_MLIR,
 }

@@ -6,7 +6,7 @@ import re
 from copy import deepcopy
 from loophole.affine_extractor import AffineExtractor
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
-from loophole.emitter import LinalgEmitter, StableHLOEmitter
+from loophole.emitter import LinalgEmitter, StableHLOEmitter, EmissionError
 from loophole.tests.fixtures import MATMUL_MLIR, TRANSPOSE_2D_MLIR, DOT_PRODUCT_MLIR
 
 
@@ -85,16 +85,15 @@ class TestLinalgEmitter:
         assert "linalg" in result.lower()
         assert len(result) > 0
 
-    def test_emit_matmul_detects_guessed_shape_fallback(self, extractor, linalg_emitter):
-        """Detect shape fallback path: missing tensor metadata falls back to 4x4."""
+    def test_emit_matmul_missing_shapes_fails(self, extractor, linalg_emitter):
+        """B-05: missing tensor metadata must fail, not guess defaults."""
         info = extractor.extract(MATMUL_MLIR)
         info = deepcopy(info)
         info.tensor_shapes = {}
 
         sketch = SKETCH_BY_NAME["linalg.matmul"]
-        result = linalg_emitter.emit(sketch, info)
-
-        assert "memref<4x4xf32>" in result
+        with pytest.raises(EmissionError, match="Missing tensor_shapes metadata"):
+            linalg_emitter.emit(sketch, info)
 
     def test_emit_transpose_detects_reverse_permutation_fallback(self, extractor, linalg_emitter):
         """Detect permutation fallback path: incomplete inference falls back to reverse dims."""
@@ -111,6 +110,20 @@ class TestLinalgEmitter:
         result = linalg_emitter.emit(transpose_sketches[0], info)
 
         assert "permutation = [2, 1, 0]" in result
+
+    def test_emit_conv2d_missing_output_shape_fails(self, extractor, linalg_emitter):
+        """B-05: conv emission must fail when output shape metadata is missing."""
+        from loophole.tests.fixtures import CONV_2D_SIMPLE_MLIR
+
+        info = extractor.extract(CONV_2D_SIMPLE_MLIR)
+        info = deepcopy(info)
+        out = info.output_tensor
+        if out and out in info.tensor_shapes:
+            del info.tensor_shapes[out]
+
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+        with pytest.raises(EmissionError, match="Missing tensor shape metadata"):
+            linalg_emitter.emit(sketch, info)
 
 
 class TestStableHLOEmitter:

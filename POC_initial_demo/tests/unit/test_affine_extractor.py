@@ -12,6 +12,10 @@ from loophole.tests.fixtures import (
     MATVEC_MLIR,
     ELEMENTWISE_ADD_MLIR,
     REDUCE_SUM_MLIR,
+    MIXED_AFFINE_SCF_MATMUL_MLIR,
+    MIXED_SCF_AFFINE_REDUCTION_MLIR,
+    INDEX_VARIATION_EQ_A_MLIR,
+    INDEX_VARIATION_EQ_B_MLIR,
 )
 
 
@@ -163,3 +167,76 @@ class TestReduceSumParsing:
     def test_one_parallel_iv(self, extractor):
         info = extractor.extract(REDUCE_SUM_MLIR)
         assert len(info.parallel_vars) == 1
+
+
+class TestMixedAffineScfParsing:
+    def test_mixed_matmul_loop_count(self, extractor):
+        info = extractor.extract(MIXED_AFFINE_SCF_MATMUL_MLIR)
+        assert len(info.loop_order) == 3
+
+    def test_mixed_matmul_loop_order(self, extractor):
+        info = extractor.extract(MIXED_AFFINE_SCF_MATMUL_MLIR)
+        assert info.loop_order == ["i", "j", "k"]
+
+    def test_mixed_matmul_bounds(self, extractor):
+        info = extractor.extract(MIXED_AFFINE_SCF_MATMUL_MLIR)
+        bounds = [info.bounds[iv][1] for iv in info.loop_order]
+        assert bounds == [4, 4, 4]
+
+    def test_mixed_matmul_reduction_vars(self, extractor):
+        info = extractor.extract(MIXED_AFFINE_SCF_MATMUL_MLIR)
+        assert len(info.reduction_vars) == 1
+        assert info.reduction_vars[0] == "k"
+
+    def test_mixed_matmul_access_extraction_stable(self, extractor):
+        info = extractor.extract(MIXED_AFFINE_SCF_MATMUL_MLIR)
+        assert len(info.reads) == 3
+        assert len(info.writes) == 1
+
+    def test_mixed_reduction_loop_count(self, extractor):
+        info = extractor.extract(MIXED_SCF_AFFINE_REDUCTION_MLIR)
+        assert len(info.loop_order) == 2
+
+    def test_mixed_reduction_loop_order(self, extractor):
+        info = extractor.extract(MIXED_SCF_AFFINE_REDUCTION_MLIR)
+        assert info.loop_order == ["m", "k"]
+
+    def test_mixed_reduction_bounds(self, extractor):
+        info = extractor.extract(MIXED_SCF_AFFINE_REDUCTION_MLIR)
+        bounds = [info.bounds[iv][1] for iv in info.loop_order]
+        assert bounds == [4, 4]
+
+    def test_mixed_reduction_role_classification(self, extractor):
+        info = extractor.extract(MIXED_SCF_AFFINE_REDUCTION_MLIR)
+        assert info.parallel_vars == ["m"]
+        assert info.reduction_vars == ["k"]
+
+
+class TestIndexNormalization:
+    def test_equivalent_index_variants_have_same_read_index(self, extractor):
+        info_a = extractor.extract(INDEX_VARIATION_EQ_A_MLIR)
+        info_b = extractor.extract(INDEX_VARIATION_EQ_B_MLIR)
+
+        assert len(info_a.reads) == 1
+        assert len(info_b.reads) == 1
+        assert info_a.reads[0].index_exprs == info_b.reads[0].index_exprs
+
+    def test_equivalent_index_variants_have_same_write_index(self, extractor):
+        info_a = extractor.extract(INDEX_VARIATION_EQ_A_MLIR)
+        info_b = extractor.extract(INDEX_VARIATION_EQ_B_MLIR)
+
+        assert len(info_a.writes) == 1
+        assert len(info_b.writes) == 1
+        assert info_a.writes[0].index_exprs == info_b.writes[0].index_exprs
+
+    def test_normalized_index_collapses_symbolic_offsets(self, extractor):
+        info = extractor.extract(INDEX_VARIATION_EQ_A_MLIR)
+        idx = info.reads[0].index_exprs[0]
+        # c1 + c2 should canonicalize to a literal offset.
+        assert "c1" not in idx and "c2" not in idx and "%" not in idx
+
+    def test_normalized_index_is_canonical_order(self, extractor):
+        info = extractor.extract(INDEX_VARIATION_EQ_B_MLIR)
+        read_idx = info.reads[0].index_exprs[0]
+        write_idx = info.writes[0].index_exprs[0]
+        assert read_idx == write_idx

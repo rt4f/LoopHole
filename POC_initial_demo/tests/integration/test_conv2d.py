@@ -29,6 +29,25 @@ class TestConv2DSimpleLiftPipeline:
             assert result.emitted_mlir
             assert "linalg" in result.emitted_mlir.lower()
 
+    def test_conv2d_missing_output_shape_reports_error(self):
+        """B-05: incomplete metadata must block emission with clear reason."""
+        lifter = Lifter(target="linalg")
+        original_emit = lifter._emit
+
+        def _emit_without_output_shape(sketch, loop_info):
+            out = loop_info.output_tensor
+            if out and out in loop_info.tensor_shapes:
+                del loop_info.tensor_shapes[out]
+            return original_emit(sketch, loop_info)
+
+        lifter._emit = _emit_without_output_shape  # type: ignore[assignment]
+        result = lifter.lift(CONV_2D_SIMPLE_MLIR)
+
+        assert not result.success
+        assert result.error is not None
+        assert "Emission error while generating" in result.error
+        assert "Missing tensor shape metadata" in result.error
+
 
 class TestConv2DNHWCLiftPipeline:
     def test_lift_returns_result(self):
