@@ -4,6 +4,7 @@ Parse → match → verify → emit.
 """
 import pytest
 from loophole.lifter import lift, Lifter, LiftResult
+from loophole.z3_checker import CheckResult
 from loophole.tests.fixtures import MATMUL_MLIR, MATMUL_128_MLIR
 
 
@@ -14,8 +15,9 @@ class TestMatmulLiftPipeline:
 
     def test_lift_identifies_matmul(self):
         result = lift(MATMUL_MLIR)
-        assert result.success or result.partial_success, \
-            f"Expected successful lift; got: {result.summary()}"
+        assert result.success, f"Expected proved lift; got: {result.summary()}"
+        assert result.verification is not None
+        assert result.verification.result == CheckResult.EQUIVALENT
 
     def test_lift_emits_linalg(self):
         result = lift(MATMUL_MLIR, target="linalg")
@@ -35,7 +37,7 @@ class TestMatmulLiftPipeline:
 
     def test_lift_sketch_name_contains_matmul(self):
         result = lift(MATMUL_MLIR)
-        if result.success or result.partial_success:
+        if result.success:
             assert result.matched_sketch is not None
             assert "matmul" in result.matched_sketch.name.lower(), \
                 f"Expected sketch name to contain 'matmul', got: {result.matched_sketch.name}"
@@ -53,7 +55,7 @@ class TestMatmulLiftPipeline:
 
     def test_lift_confidence_positive(self):
         result = lift(MATMUL_MLIR)
-        if result.success or result.partial_success:
+        if result.success:
             assert result.sympy_confidence > 0.0
 
     def test_lift_larger_matmul(self):

@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import os
 import time
+import re
 
 # ---------------------------------------------------------------------------
 # Ensure we can import from src/ without installing (for running directly)
@@ -39,6 +40,45 @@ except ImportError:
 from loophole.lifter import lift, LiftResult
 from loophole.tests.fixtures import DEMO_FIXTURES
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+# Useful for fast smoke tests without changing default demo behavior.
+DEMO_Z3_TIMEOUT_MS = max(1, _env_int("LOOPHOLE_DEMO_Z3_TIMEOUT_MS", 8000))
+DEMO_FIXTURE_LIMIT = max(0, _env_int("LOOPHOLE_DEMO_FIXTURE_LIMIT", 0))
+
+
+def _iter_demo_fixtures() -> list[tuple[str, str]]:
+    items = list(DEMO_FIXTURES.items())
+    if DEMO_FIXTURE_LIMIT > 0:
+        return items[:DEMO_FIXTURE_LIMIT]
+    return items
+
+
+def _extract_emitted_op(emitted_mlir: str) -> str:
+    for line in emitted_mlir.splitlines():
+        m = re.search(r"(linalg|stablehlo)\.\w+", line)
+        if m:
+            return m.group(0)
+    return "--"
+
+
+def _terminal_safe(text: str) -> str:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+        return text
+    except UnicodeEncodeError:
+        return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
 # ---------------------------------------------------------------------------
 # Plain-text fallback helpers
 # ---------------------------------------------------------------------------
@@ -55,9 +95,9 @@ def plain_result(name: str, result: LiftResult) -> None:
     if result.matched_sketch:
         print(f"  Sketch  : {result.matched_sketch.name}")
         print(f"  Confidence: {result.sympy_confidence:.2%}")
-    print(f"  Summary : {result.summary()}")
+    print(f"  Summary : {_terminal_safe(result.summary())}")
     if result.emitted_mlir:
-        print(f"\n  -- Emitted MLIR --\n{result.emitted_mlir}")
+        print(f"\n  -- Emitted MLIR --\n{_terminal_safe(result.emitted_mlir)}")
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +106,10 @@ def plain_result(name: str, result: LiftResult) -> None:
 
 def run_demo_fancy() -> None:
     console = Console()
+    fixtures = _iter_demo_fixtures()
 
     console.print(Panel.fit(
-        "[bold cyan]LoopHole[/bold cyan] — Loop Nest → Tensor Dialect Lifter\n"
+        "[bold cyan]LoopHole[/bold cyan] - Loop Nest -> Tensor Dialect Lifter\n"
         "[dim]Automatically raises scalar Affine IR to Linalg/StableHLO[/dim]",
         border_style="cyan",
     ))
@@ -83,7 +124,7 @@ def run_demo_fancy() -> None:
     results_table.add_column("Status", justify="center")
     results_table.add_column("Sketch Matched", style="yellow")
     results_table.add_column("Confidence", justify="right")
-    results_table.add_column("Linalg Op", style="green")
+    results_table.add_column("Emitted Op", style="green")
 
     lift_results: list[tuple[str, LiftResult]] = []
 
@@ -95,11 +136,11 @@ def run_demo_fancy() -> None:
         console=console,
         transient=True,
     ) as progress:
-        task = progress.add_task("Lifting kernels…", total=len(DEMO_FIXTURES))
-        for name, mlir_text in DEMO_FIXTURES.items():
-            progress.update(task, description=f"Lifting [bold]{name}[/bold]…")
+        task = progress.add_task("Lifting kernels...", total=len(fixtures))
+        for name, mlir_text in fixtures:
+            progress.update(task, description=f"Lifting [bold]{name}[/bold]...")
             t0 = time.time()
-            result = lift(mlir_text, target="both", z3_timeout_ms=8000)
+            result = lift(mlir_text, target="both", z3_timeout_ms=DEMO_Z3_TIMEOUT_MS)
             elapsed = time.time() - t0
             lift_results.append((name, result))
 
@@ -113,16 +154,9 @@ def run_demo_fancy() -> None:
             sketch_name = result.matched_sketch.name if result.matched_sketch else "--"
             conf_str = f"{result.sympy_confidence:.0%}" if result.matched_sketch else "--"
 
-            # Extract just the linalg op name
-            linalg_op = "--"
-            if result.emitted_mlir:
-                for line in result.emitted_mlir.splitlines():
-                    m = re.search(r"linalg\.\w+", line)
-                    if m:
-                        linalg_op = m.group(0)
-                        break
+            emitted_op = _extract_emitted_op(result.emitted_mlir) if result.emitted_mlir else "--"
 
-            results_table.add_row(name, status, sketch_name, conf_str, linalg_op)
+            results_table.add_row(name, status, sketch_name, conf_str, emitted_op)
             progress.advance(task)
 
     console.print(results_table)
@@ -132,18 +166,18 @@ def run_demo_fancy() -> None:
     # Show detailed output for the first successful lift
     # ---------------------------------------------------------------------------
     for name, result in lift_results:
-        if result.success and result.linalg_mlir:
+        if (result.success or result.partial_success) and result.emitted_mlir:
+            dialect_label = "MLIR"
+            if "linalg." in result.emitted_mlir:
+                dialect_label = "Linalg MLIR"
+            elif "stablehlo." in result.emitted_mlir:
+                dialect_label = "StableHLO MLIR"
+
             console.print(Panel.fit(
-                Syntax(result.linalg_mlir, "mlir", theme="monokai", line_numbers=True),
-                title=f"[bold green]Linalg MLIR — {name}[/bold green]",
+                Syntax(_terminal_safe(result.emitted_mlir), "mlir", theme="monokai", line_numbers=True),
+                title=f"[bold green]{dialect_label} - {name}[/bold green]",
                 border_style="green",
             ))
-            if result.stablehlo_mlir:
-                console.print(Panel.fit(
-                    Syntax(result.stablehlo_mlir, "mlir", theme="monokai", line_numbers=True),
-                    title=f"[bold blue]StableHLO MLIR — {name}[/bold blue]",
-                    border_style="blue",
-                ))
             break
 
     # Summary statistics
@@ -163,8 +197,8 @@ def run_demo_fancy() -> None:
 def run_demo_plain() -> None:
     plain_header("LoopHole -- Loop Nest -> Tensor Dialect Lifter")
     print("Lifting demo fixtures...\n")
-    for name, mlir_text in DEMO_FIXTURES.items():
-        result = lift(mlir_text, target="both", z3_timeout_ms=8000)
+    for name, mlir_text in _iter_demo_fixtures():
+        result = lift(mlir_text, target="both", z3_timeout_ms=DEMO_Z3_TIMEOUT_MS)
         plain_result(name, result)
 
     print("\n" + "=" * 70)
@@ -186,7 +220,7 @@ def run_matmul_verbose() -> None:
         console = Console()
         console.rule("[bold cyan]Step-by-step: Matmul Lift[/bold cyan]")
         console.print(Panel.fit(
-            Syntax(MATMUL_MLIR, "mlir", theme="monokai"),
+            Syntax(_terminal_safe(MATMUL_MLIR), "mlir", theme="monokai"),
             title="Input MLIR",
         ))
     else:
@@ -225,12 +259,12 @@ def run_matmul_verbose() -> None:
         if best:
             print(f"Best sketch match: {best.name}")
 
-    result = lift(MATMUL_MLIR, target="linalg")
+    result = lift(MATMUL_MLIR, target="linalg", z3_timeout_ms=DEMO_Z3_TIMEOUT_MS)
     if (result.success or result.partial_success) and result.emitted_mlir:
         if HAS_RICH:
             console = Console()
             console.print(Panel.fit(
-                Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=True),
+                Syntax(_terminal_safe(result.emitted_mlir), "mlir", theme="monokai", line_numbers=True),
                 title="[bold green]Emitted Linalg MLIR[/bold green]",
                 border_style="green",
             ))
