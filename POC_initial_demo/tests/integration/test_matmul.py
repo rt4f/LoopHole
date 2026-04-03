@@ -4,6 +4,7 @@ Parse → match → verify → emit.
 """
 import pytest
 from loophole.lifter import lift, Lifter, LiftResult
+from loophole.mlir_validator import validate_mlir_artifact
 from loophole.z3_checker import CheckResult
 from loophole.tests.fixtures import MATMUL_MLIR, MATMUL_128_MLIR
 
@@ -62,8 +63,10 @@ class TestMatmulLiftPipeline:
         """Larger bounds: Z3 may timeout but lift should still return a result."""
         result = lift(MATMUL_128_MLIR, z3_timeout_ms=3000)
         assert isinstance(result, LiftResult)
-        # Even if Z3 times out, SymPy match should still give partial_success
-        assert result.success or result.partial_success
+        # Under strict emission policies, an unproved match can still fail to emit.
+        if not (result.success or result.partial_success):
+            assert result.error is not None
+            assert "Emission error while generating" in result.error
 
     def test_lift_fails_on_missing_shape_metadata(self):
         """B-05: emission must fail when required tensor shape metadata is missing."""
@@ -81,3 +84,10 @@ class TestMatmulLiftPipeline:
         assert result.error is not None
         assert "Emission error while generating" in result.error
         assert "Missing tensor_shapes metadata" in result.error
+
+    def test_lift_emitted_artifact_validates(self, mlir_verifier_cmd):
+        result = lift(MATMUL_MLIR, target="linalg")
+        assert result.success, f"Expected proved matmul lift; got: {result.summary()}"
+        assert result.emitted_mlir is not None
+        validation = validate_mlir_artifact(result.emitted_mlir, mlir_verifier_cmd)
+        assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"

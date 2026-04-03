@@ -19,19 +19,22 @@ This folder contains all documentation for Person B's parallel execution lane in
 | [04_mixed_affine_scf_support.md](04_mixed_affine_scf_support.md) | B-03: Expand parser support for mixed affine/scf patterns | Done |
 | [05_affine_index_normalization.md](05_affine_index_normalization.md) | B-04: Improve affine index normalization | Done |
 | [06_remove_silent_shape_type_defaults.md](06_remove_silent_shape_type_defaults.md) | B-05: Remove silent shape/type defaults in emitter | Done |
+| [07_transpose_permutation_inference_validation.md](07_transpose_permutation_inference_validation.md) | B-06: Improve transpose permutation inference and validation | Done |
 
-### Phase 3: Emitter & Advanced Hardening (Pending)
+### Phase 3: Emitter & Advanced Hardening
 
-Future docs will be added to this folder as B-06 through B-12 tasks are executed:
-- B-06: Improve transpose permutation inference
-- B-07: Infer/propagate convolution attributes
-- B-08 through B-12: (details TBD)
+| Doc | Task | Status |
+|---|---|---|
+| [08_convolution_attribute_inference_policy.md](08_convolution_attribute_inference_policy.md) | B-07: Infer/propagate convolution attributes | Done |
+| [09_emitted_mlir_validation_pipeline.md](09_emitted_mlir_validation_pipeline.md) | B-08: Add artifact-level emitted MLIR validation pipeline | Done |
+
+Future docs will be added to this folder as B-09 through B-12 tasks are executed.
 
 ## Quick Reference
 
-**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata)  
-**Current focus:** Ready for B-06 (transpose permutation inference/validation)  
-**Test status:** 140 passing, 1 skipped, 1 xfailed  
+**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline)  
+**Current focus:** Ready for B-09  
+**Test status:** 174 passing, 1 skipped  
 **Demo status:** CLI 7/10 proved, 3 partial; standalone script has stale field reference  
 
 See individual docs for detailed audit tables, disposition mappings, and implementation details.

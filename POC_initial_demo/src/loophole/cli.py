@@ -48,6 +48,7 @@ from loophole.polygeist_frontend import (
     PolygeistFrontendError,
 )
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
+from loophole.mlir_validator import find_mlir_verifier, validate_mlir_artifact
 from loophole.z3_checker import CheckResult
 
 console = Console()
@@ -263,6 +264,10 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
               help="Skip Z3 verification (emit based on SymPy match only)")
 @click.option("--strict", is_flag=True,
               help="Accept only formally proved results")
+@click.option("--validate-emitted", is_flag=True,
+              help="Validate emitted MLIR using an external verifier command")
+@click.option("--mlir-verifier", default=None,
+              help="Verifier command to run (default: auto-detect mlir-opt)")
 def lift_cmd(
     input_file: str,
     output: Optional[str],
@@ -273,6 +278,8 @@ def lift_cmd(
     report: bool,
     no_verify: bool,
     strict: bool,
+    validate_emitted: bool,
+    mlir_verifier: Optional[str],
 ):
     """
     Lift an MLIR Affine IR file to a high-level tensor dialect.
@@ -303,7 +310,15 @@ def lift_cmd(
         result = lifter.lift(src)
         progress.advance(task)
 
-    _print_lift_result(result, output, report, verbose, strict_mode=strict)
+    _print_lift_result(
+        result,
+        output,
+        report,
+        verbose,
+        strict_mode=strict,
+        validate_emitted=validate_emitted,
+        mlir_verifier=mlir_verifier,
+    )
 
 
 def _determine_exit_code(result: LiftResult, strict_mode: bool) -> int:
@@ -328,8 +343,11 @@ def _print_lift_result(
     report: bool,
     verbose: bool,
     strict_mode: bool = False,
+    validate_emitted: bool = False,
+    mlir_verifier: Optional[str] = None,
 ):
     exit_code = _determine_exit_code(result, strict_mode)
+    validation_failed = False
 
     if result.success:
         status = "[green bold]FORMALLY PROVED - EQUIVALENT[/green bold]"
@@ -376,12 +394,39 @@ def _print_lift_result(
         syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=True)
         console.print(syntax)
 
+        if validate_emitted:
+            verifier_cmd = find_mlir_verifier(mlir_verifier)
+            if not verifier_cmd:
+                console.print(
+                    "[red]Emitted MLIR validation requested, but no verifier command was found. "
+                    "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+                )
+                validation_failed = True
+            else:
+                try:
+                    validation = validate_mlir_artifact(result.emitted_mlir, verifier_cmd)
+                    if validation.ok:
+                        console.print(f"[green]Emitted MLIR validation passed[/green] via [dim]{verifier_cmd}[/dim]")
+                    else:
+                        validation_failed = True
+                        console.print(f"[red]Emitted MLIR validation failed[/red] via [dim]{verifier_cmd}[/dim]")
+                        if validation.stderr:
+                            console.print(Panel(validation.stderr[:2000], title="Verifier stderr", border_style="red"))
+                        elif validation.stdout:
+                            console.print(Panel(validation.stdout[:2000], title="Verifier stdout", border_style="red"))
+                except Exception as exc:
+                    validation_failed = True
+                    console.print(f"[red]Emitted MLIR validation error:[/red] {exc}")
+
         if output:
             Path(output).write_text(result.emitted_mlir, encoding="utf-8")
             console.print(f"\n[dim]Written to: {output}[/dim]")
 
     if report and result.verification:
         _print_verification_report(result.verification)
+
+    if validation_failed:
+        exit_code = 1
 
     if exit_code != 0:
         sys.exit(exit_code)
@@ -525,6 +570,10 @@ def cgeist_cmd(
 @click.option("--timeout-sec", type=int, default=60, show_default=True,
               help="cgeist subprocess timeout in seconds")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
+@click.option("--validate-emitted", is_flag=True,
+              help="Validate emitted MLIR using an external verifier command")
+@click.option("--mlir-verifier", default=None,
+              help="Verifier command to run (default: auto-detect mlir-opt)")
 def lift_c_cmd(
     source_files: tuple[str, ...],
     output: Optional[str],
@@ -544,6 +593,8 @@ def lift_c_cmd(
     cgeist_bin: str,
     timeout_sec: int,
     verbose: bool,
+    validate_emitted: bool,
+    mlir_verifier: Optional[str],
 ):
     """One-step flow: C/C++ source -> cgeist MLIR -> lifted tensor dialect."""
     if not source_files:
@@ -602,7 +653,15 @@ def lift_c_cmd(
             f"command: {' '.join(cgeist_result.command)}[/dim]"
         )
 
-    _print_lift_result(result, output, report, verbose, strict_mode=strict)
+    _print_lift_result(
+        result,
+        output,
+        report,
+        verbose,
+        strict_mode=strict,
+        validate_emitted=validate_emitted,
+        mlir_verifier=mlir_verifier,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +760,10 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
 @click.option("--report", is_flag=True, help="Write JSON report for batch run")
 @click.option("--report-path", type=click.Path(path_type=Path), default=None,
               help="Optional JSON report path (default: <output-dir>/loophole_report.json)")
+@click.option("--validate-emitted", is_flag=True,
+              help="Validate emitted MLIR using an external verifier command")
+@click.option("--mlir-verifier", default=None,
+              help="Verifier command to run (default: auto-detect mlir-opt)")
 @click.option("--verbose", "-v", is_flag=True)
 def batch(
     input_dir: str,
@@ -709,6 +772,8 @@ def batch(
     z3_timeout: int,
     report: bool,
     report_path: Optional[Path],
+    validate_emitted: bool,
+    mlir_verifier: Optional[str],
     verbose: bool,
 ):
     """
@@ -733,6 +798,17 @@ def batch(
         LiftResultState.UNPROVED_TIMEOUT: 0,
         LiftResultState.REFUTED: 0,
     }
+    validation_failed = 0
+
+    verifier_cmd = None
+    if validate_emitted:
+        verifier_cmd = find_mlir_verifier(mlir_verifier)
+        if not verifier_cmd:
+            console.print(
+                "[red]Batch emitted MLIR validation requested, but no verifier command was found. "
+                "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+            )
+            sys.exit(1)
 
     table = Table(title=f"Batch Lift Results: {input_dir}", show_header=True)
     table.add_column("File", style="cyan")
@@ -778,6 +854,17 @@ def batch(
                 out_file = out_path / (mlir_file.stem + "_lifted.mlir")
                 out_file.write_text(result.emitted_mlir, encoding="utf-8")
                 emitted_path = str(out_file)
+
+                if validate_emitted and verifier_cmd:
+                    validation = validate_mlir_artifact(result.emitted_mlir, verifier_cmd)
+                    if not validation.ok:
+                        validation_failed += 1
+                        console.print(
+                            f"[red]Validation failed[/red] for {mlir_file.name} via [dim]{verifier_cmd}[/dim]"
+                        )
+                        detail = validation.stderr or validation.stdout
+                        if detail:
+                            console.print(Panel(detail[:1200], title="Verifier output", border_style="red"))
 
             results.append({
                 "file": str(mlir_file),
@@ -836,6 +923,9 @@ def batch(
             encoding="utf-8",
         )
         console.print(f"\n[dim]Report written to: {resolved_report_path}[/dim]")
+
+    if validate_emitted and validation_failed:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

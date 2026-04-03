@@ -19,6 +19,7 @@ from loophole.tests.fixtures import (
     ELEMENTWISE_ADD_MLIR,
     REDUCE_SUM_MLIR,
 )
+from loophole.mlir_validator import find_mlir_verifier
 
 # ---------------------------------------------------------------------------
 # Fixture file directory
@@ -132,3 +133,22 @@ def conv2d_loop_info():
 @pytest.fixture(scope="session")
 def dot_product_loop_info():
     return AffineExtractor().extract(DOT_PRODUCT_MLIR)
+
+
+# ---------------------------------------------------------------------------
+# MLIR artifact validation fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def mlir_verifier_cmd() -> str:
+    """Resolve verifier command or skip unless strict CI mode requires it."""
+    cmd = find_mlir_verifier()
+    require = os.getenv("LOOPHOLE_REQUIRE_MLIR_VERIFY", "0").strip() in {"1", "true", "TRUE", "yes"}
+    if cmd:
+        return cmd
+    if require:
+        pytest.fail(
+            "LOOPHOLE_REQUIRE_MLIR_VERIFY is set, but no MLIR verifier command was found on PATH "
+            "(tried LOOPHOLE_MLIR_VERIFY_CMD, mlir-opt, mlir-opt-18, mlir-opt-17)."
+        )
+    pytest.skip("No MLIR verifier command available on PATH; artifact validation skipped.")

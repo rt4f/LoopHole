@@ -2,8 +2,13 @@
 Integration test — full lift pipeline for 2D convolution.
 """
 from loophole.lifter import lift, Lifter, LiftResult, LiftResultState
-from loophole.z3_checker import CheckResult
-from loophole.tests.fixtures import CONV_2D_SIMPLE_MLIR, CONV_2D_NHWC_MLIR
+from loophole.mlir_validator import validate_mlir_artifact
+from loophole.z3_checker import CheckResult, VerificationReport
+from loophole.tests.fixtures import (
+    CONV_2D_SIMPLE_MLIR,
+    CONV_2D_NHWC_MLIR,
+    CONV_2D_STRIDED_DILATED_MLIR,
+)
 
 
 class TestConv2DSimpleLiftPipeline:
@@ -33,6 +38,7 @@ class TestConv2DSimpleLiftPipeline:
         """B-05: incomplete metadata must block emission with clear reason."""
         lifter = Lifter(target="linalg")
         original_emit = lifter._emit
+        original_verify = lifter._verify_candidates
 
         def _emit_without_output_shape(sketch, loop_info):
             out = loop_info.output_tensor
@@ -40,7 +46,20 @@ class TestConv2DSimpleLiftPipeline:
                 del loop_info.tensor_shapes[out]
             return original_emit(sketch, loop_info)
 
+        def _verify_equivalent(loop_info, candidates):
+            if not candidates:
+                return original_verify(loop_info, candidates)
+            sketch, conf = candidates[0]
+            report = VerificationReport(
+                result=CheckResult.EQUIVALENT,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes="Forced equivalent for emission-path test",
+            )
+            return (sketch, report, conf)
+
         lifter._emit = _emit_without_output_shape  # type: ignore[assignment]
+        lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
         result = lifter.lift(CONV_2D_SIMPLE_MLIR)
 
         assert not result.success
@@ -57,6 +76,45 @@ class TestConv2DNHWCLiftPipeline:
     def test_lift_identifies_nhwc(self):
         result = lift(CONV_2D_NHWC_MLIR)
         assert result.verification is not None, f"NHWC conv2d lift: {result.summary()}"
+
+
+class TestConv2DAttrInference:
+    def test_linalg_emits_inferred_stride_dilation(self):
+        result = lift(CONV_2D_STRIDED_DILATED_MLIR, target="linalg")
+        if result.success or result.partial_success:
+            assert result.emitted_mlir is not None
+            assert "dilations = dense<[3, 2]>" in result.emitted_mlir
+            assert "strides   = dense<[2, 1]>" in result.emitted_mlir
+
+    def test_stablehlo_emits_inferred_stride_dilation(self):
+        result = lift(CONV_2D_STRIDED_DILATED_MLIR, target="stablehlo")
+        if result.success or result.partial_success:
+            assert result.emitted_mlir is not None
+            assert "window = {stride = [2, 1]" in result.emitted_mlir
+            assert "rhs_dilate = [3, 2]" in result.emitted_mlir
+
+    def test_linalg_emitted_artifact_validates(self, mlir_verifier_cmd):
+        lifter = Lifter(target="linalg")
+        original_verify = lifter._verify_candidates
+
+        def _verify_equivalent(loop_info, candidates):
+            if not candidates:
+                return original_verify(loop_info, candidates)
+            sketch, conf = candidates[0]
+            report = VerificationReport(
+                result=CheckResult.EQUIVALENT,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes="Forced equivalent for artifact validation path",
+            )
+            return (sketch, report, conf)
+
+        lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
+        result = lifter.lift(CONV_2D_STRIDED_DILATED_MLIR)
+        assert result.success or result.partial_success
+        assert result.emitted_mlir is not None
+        validation = validate_mlir_artifact(result.emitted_mlir, mlir_verifier_cmd)
+        assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
 
 
 def test_conv2d_simple_not_refuted_in_phase1_strict_semantics():

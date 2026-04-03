@@ -5,9 +5,18 @@ import pytest
 import re
 from copy import deepcopy
 from loophole.affine_extractor import AffineExtractor
+from loophole.mlir_validator import validate_mlir_artifact
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.emitter import LinalgEmitter, StableHLOEmitter, EmissionError
-from loophole.tests.fixtures import MATMUL_MLIR, TRANSPOSE_2D_MLIR, DOT_PRODUCT_MLIR
+from loophole.tests.fixtures import (
+    MATMUL_MLIR,
+    TRANSPOSE_2D_MLIR,
+    TRANSPOSE_3D_PERM_120_MLIR,
+    TRANSPOSE_3D_PERM_201_MLIR,
+    CONV_1D_STRIDED_DILATED_MLIR,
+    CONV_2D_STRIDED_DILATED_MLIR,
+    DOT_PRODUCT_MLIR,
+)
 
 
 @pytest.fixture
@@ -63,11 +72,14 @@ class TestLinalgEmitter:
         from loophole.tests.fixtures import MATMUL_MLIR
         extractor = AffineExtractor()
         info = extractor.extract(MATMUL_MLIR)
-        # Just check emitter doesn't crash for any sketch
+        # Incompatible sketches may fail under strict metadata/attr policies.
         for sketch in LINALG_SKETCHES[:6]:  # limit to first 6 to keep test fast
-            result = linalg_emitter.emit(sketch, info)
-            assert isinstance(result, str), f"emit returned non-string for {sketch.name}"
-            assert len(result) > 0, f"emit returned empty string for {sketch.name}"
+            try:
+                result = linalg_emitter.emit(sketch, info)
+                assert isinstance(result, str), f"emit returned non-string for {sketch.name}"
+                assert len(result) > 0, f"emit returned empty string for {sketch.name}"
+            except EmissionError as exc:
+                assert "policy failure" in str(exc).lower() or "missing" in str(exc).lower()
 
     def test_emit_matmul_named_op(self, extractor, linalg_emitter):
         info = extractor.extract(MATMUL_MLIR)
@@ -95,8 +107,32 @@ class TestLinalgEmitter:
         with pytest.raises(EmissionError, match="Missing tensor_shapes metadata"):
             linalg_emitter.emit(sketch, info)
 
-    def test_emit_transpose_detects_reverse_permutation_fallback(self, extractor, linalg_emitter):
-        """Detect permutation fallback path: incomplete inference falls back to reverse dims."""
+    def test_emit_transpose_exact_permutation_2d(self, extractor, linalg_emitter):
+        info = extractor.extract(TRANSPOSE_2D_MLIR)
+        transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
+        if not transpose_sketches:
+            pytest.skip("No transpose sketch")
+        result = linalg_emitter.emit(transpose_sketches[0], info)
+        assert "permutation = [1, 0]" in result
+
+    def test_emit_transpose_exact_permutation_3d_120(self, extractor, linalg_emitter):
+        info = extractor.extract(TRANSPOSE_3D_PERM_120_MLIR)
+        transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
+        if not transpose_sketches:
+            pytest.skip("No transpose sketch")
+        result = linalg_emitter.emit(transpose_sketches[0], info)
+        assert "permutation = [1, 2, 0]" in result
+
+    def test_emit_transpose_exact_permutation_3d_201(self, extractor, linalg_emitter):
+        info = extractor.extract(TRANSPOSE_3D_PERM_201_MLIR)
+        transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
+        if not transpose_sketches:
+            pytest.skip("No transpose sketch")
+        result = linalg_emitter.emit(transpose_sketches[0], info)
+        assert "permutation = [2, 0, 1]" in result
+
+    def test_emit_transpose_ambiguous_inference_fails(self, extractor, linalg_emitter):
+        """B-06: ambiguous/non-direct output indexing must fail, no reverse fallback."""
         info = extractor.extract(TRANSPOSE_2D_MLIR)
         info = deepcopy(info)
 
@@ -107,9 +143,8 @@ class TestLinalgEmitter:
         transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
         if not transpose_sketches:
             pytest.skip("No transpose sketch")
-        result = linalg_emitter.emit(transpose_sketches[0], info)
-
-        assert "permutation = [2, 1, 0]" in result
+        with pytest.raises(EmissionError, match="Cannot infer transpose permutation|Invalid output rank"):
+            linalg_emitter.emit(transpose_sketches[0], info)
 
     def test_emit_conv2d_missing_output_shape_fails(self, extractor, linalg_emitter):
         """B-05: conv emission must fail when output shape metadata is missing."""
@@ -124,6 +159,62 @@ class TestLinalgEmitter:
         sketch = SKETCH_BY_NAME["linalg.conv_2d"]
         with pytest.raises(EmissionError, match="Missing tensor shape metadata"):
             linalg_emitter.emit(sketch, info)
+
+    def test_emit_conv1d_infers_non_unit_attrs(self, extractor, linalg_emitter):
+        """B-07: infer explicit non-unit stride/dilation for 1-D conv."""
+        info = extractor.extract(CONV_1D_STRIDED_DILATED_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.conv_1d_ncw_fcw"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "dilations = dense<3>" in result
+        assert "strides   = dense<2>" in result
+
+    def test_emit_conv2d_infers_non_unit_attrs(self, extractor, linalg_emitter):
+        """B-07: infer per-axis non-unit stride/dilation for 2-D conv."""
+        info = extractor.extract(CONV_2D_STRIDED_DILATED_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "dilations = dense<[3, 2]>" in result
+        assert "strides   = dense<[2, 1]>" in result
+
+    def test_emit_conv2d_attr_inference_failure_is_explicit(self, extractor, linalg_emitter):
+        """B-07: unsupported indexing must fail with policy error, never guess attrs."""
+        from loophole.tests.fixtures import CONV_2D_SIMPLE_MLIR
+
+        info = extractor.extract(CONV_2D_SIMPLE_MLIR)
+        info = deepcopy(info)
+        i_name = info.input_tensors[0]
+
+        for read in info.reads:
+            if read.tensor_name == i_name and len(read.index_exprs) >= 2:
+                read.index_exprs[0] = "%oh + %ow"
+                break
+
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+        with pytest.raises(EmissionError, match="Convolution attr policy failure"):
+            linalg_emitter.emit(sketch, info)
+
+    def test_emit_matmul_artifact_validates(self, extractor, linalg_emitter, mlir_verifier_cmd):
+        info = extractor.extract(MATMUL_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+        validation = validate_mlir_artifact(result, mlir_verifier_cmd)
+        assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
+
+    def test_emit_transpose_artifact_validates(self, extractor, linalg_emitter, mlir_verifier_cmd):
+        info = extractor.extract(TRANSPOSE_2D_MLIR)
+        transpose_sketches = [s for n, s in SKETCH_BY_NAME.items() if "transpose" in n]
+        if not transpose_sketches:
+            pytest.skip("No transpose sketch")
+        result = linalg_emitter.emit(transpose_sketches[0], info)
+        validation = validate_mlir_artifact(result, mlir_verifier_cmd)
+        assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
+
+    def test_emit_conv2d_artifact_validates(self, extractor, linalg_emitter, mlir_verifier_cmd):
+        info = extractor.extract(CONV_2D_STRIDED_DILATED_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+        result = linalg_emitter.emit(sketch, info)
+        validation = validate_mlir_artifact(result, mlir_verifier_cmd)
+        assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
 
 
 class TestStableHLOEmitter:
@@ -146,3 +237,15 @@ class TestStableHLOEmitter:
             pytest.skip("No StableHLO dot sketch")
         result = stablehlo_emitter.emit(dot_sketches[0], info)
         assert "stablehlo" in result.lower() or "func" in result.lower()
+
+    def test_emit_stablehlo_convolution_infers_non_unit_attrs(self, extractor, stablehlo_emitter):
+        info = extractor.extract(CONV_2D_STRIDED_DILATED_MLIR)
+        from loophole.sketch_library import STABLEHLO_SKETCHES
+
+        conv_sketches = [s for s in STABLEHLO_SKETCHES if "convolution" in s.name.lower()]
+        if not conv_sketches:
+            pytest.skip("No StableHLO convolution sketch")
+
+        result = stablehlo_emitter.emit(conv_sketches[0], info)
+        assert "window = {stride = [2, 1]" in result
+        assert "rhs_dilate = [3, 2]" in result
