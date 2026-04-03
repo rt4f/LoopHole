@@ -3,6 +3,7 @@ Integration test — full lift pipeline for 1D convolution.
 """
 import pytest
 from loophole.lifter import lift, LiftResult
+from loophole.z3_checker import CheckResult
 from loophole.tests.fixtures import CONV_1D_MLIR
 
 
@@ -14,12 +15,13 @@ class TestConv1DLiftPipeline:
     def test_lift_identifies_conv(self):
         result = lift(CONV_1D_MLIR)
         # conv1d has mulf+addf with k-window, should match
-        assert result.success or result.partial_success, \
-            f"Expected lift to succeed for conv1d; got: {result.summary()}"
+        assert result.success, f"Expected proved conv1d lift; got: {result.summary()}"
+        assert result.verification is not None
+        assert result.verification.result == CheckResult.EQUIVALENT
 
     def test_lift_sketch_is_conv1d(self):
         result = lift(CONV_1D_MLIR)
-        if result.success or result.partial_success:
+        if result.success:
             assert result.matched_sketch is not None
             sketch_name = result.matched_sketch.name.lower()
             assert "conv" in sketch_name, \

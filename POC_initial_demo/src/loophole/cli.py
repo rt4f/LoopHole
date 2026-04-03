@@ -2,7 +2,12 @@
 cli.py — Command-line interface for LoopHole.
 
 Commands:
+<<<<<<< HEAD
     loophole compile -- Compile C/C++ into MLIR Affine/SCF form (Polygeist)
+=======
+    loophole cgeist  -- Convert C/C++ source to MLIR with Polygeist cgeist
+    loophole lift-c  -- One-step C/C++ -> MLIR -> lifted tensor dialect
+>>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
   loophole lift    -- Lift a single MLIR Affine IR file to tensor dialect
   loophole verify  -- Only run formal verification, skip emit
   loophole batch   -- Lift all .mlir files in a directory
@@ -10,6 +15,8 @@ Commands:
 
 Usage examples:
   loophole lift matmul.mlir --output matmul_lifted.mlir
+    loophole cgeist kernel.c --function=kernel -o kernel.mlir
+    loophole lift-c kernel.c --function=kernel --target stablehlo
   loophole lift matmul.mlir --target stablehlo --verbose
   loophole verify matmul.mlir --sketch linalg.matmul
   loophole batch kernels/ --output-dir lifted/ --report
@@ -36,6 +43,12 @@ from rich.table import Table
 from rich import print as rprint
 
 from loophole.lifter import Lifter, LiftResult, lift as lift_one
+from loophole.polygeist_frontend import (
+    CgeistInvocation,
+    CgeistResult,
+    PolygeistFrontend,
+    PolygeistFrontendError,
+)
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.z3_checker import CheckResult
 
@@ -58,6 +71,7 @@ def main():
     pass
 
 
+<<<<<<< HEAD
 def _default_frontend_for_file(source_path: Path) -> str:
     cxx_exts = {".cc", ".cpp", ".cxx", ".c++", ".cp"}
     return "cgeist++" if source_path.suffix.lower() in cxx_exts else "cgeist"
@@ -218,6 +232,17 @@ def compile_cmd(
             border_style="green",
         )
     )
+=======
+def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
+    lines = [f"[red]{exc}[/red]"]
+    if exc.command:
+        lines.append(f"\n[bold]Command:[/bold] {' '.join(exc.command)}")
+    if exc.stderr:
+        lines.append("\n[bold]stderr:[/bold]")
+        lines.append(exc.stderr.strip()[:2000])
+    console.print(Panel("\n".join(lines), title="cgeist failed", border_style="red"))
+    sys.exit(2)
+>>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +372,205 @@ def _print_verification_report(v):
     if v.z3_model:
         table.add_row("Counter-example", v.z3_model[:200])
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# loophole cgeist
+# ---------------------------------------------------------------------------
+
+@main.command(name="cgeist")
+@click.argument("source_files", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Output MLIR file (default: print to stdout)")
+@click.option("--language", "-x", type=click.Choice(["c", "cpp"]), default="c",
+              show_default=True, help="Source language for cgeist")
+@click.option("--function", default=None,
+              help="Optional entry function name to focus conversion")
+@click.option("--include-dir", "-I", multiple=True, type=click.Path(exists=True, file_okay=False),
+              help="Include directory (repeatable)")
+@click.option("--define", "-D", multiple=True,
+              help="Macro definition in KEY=VALUE form (repeatable)")
+@click.option("--std", default=None,
+              help="Language standard, e.g. c11, c17, c++17, c++20")
+@click.option("--clang-arg", multiple=True,
+              help="Extra argument forwarded to cgeist/clang (repeatable)")
+@click.option("--cgeist-bin", default="cgeist", show_default=True,
+              help="Path to cgeist executable")
+@click.option("--timeout-sec", type=int, default=60, show_default=True,
+              help="cgeist subprocess timeout in seconds")
+@click.option("--verbose", "-v", is_flag=True, help="Print command details")
+def cgeist_cmd(
+    source_files: tuple[str, ...],
+    output: Optional[str],
+    language: str,
+    function: Optional[str],
+    include_dir: tuple[str, ...],
+    define: tuple[str, ...],
+    std: Optional[str],
+    clang_arg: tuple[str, ...],
+    cgeist_bin: str,
+    timeout_sec: int,
+    verbose: bool,
+):
+    """Convert C/C++ source files to MLIR using Polygeist cgeist."""
+    if not source_files:
+        raise click.UsageError("At least one source file is required.")
+
+    frontend = PolygeistFrontend(
+        cgeist_bin=cgeist_bin,
+        default_timeout_sec=timeout_sec,
+        verbose=verbose,
+    )
+    invocation = CgeistInvocation(
+        source_files=list(source_files),
+        language=language,
+        function=function,
+        include_dirs=list(include_dir),
+        defines=list(define),
+        std=std,
+        extra_clang_args=list(clang_arg),
+        timeout_sec=timeout_sec,
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console,
+    ) as progress:
+        task = progress.add_task("[cyan]Running cgeist...", total=None)
+        try:
+            result = frontend.generate_mlir(invocation)
+        except PolygeistFrontendError as exc:
+            progress.advance(task)
+            _print_cgeist_error_and_exit(exc)
+        progress.advance(task)
+
+    if output:
+        Path(output).write_text(result.mlir_text, encoding="utf-8")
+        console.print(f"[green]Generated MLIR written to:[/green] {output}")
+    else:
+        syntax = Syntax(result.mlir_text, "mlir", theme="monokai", line_numbers=True)
+        console.print(syntax)
+
+    console.print(
+        f"[dim]cgeist completed in {result.elapsed_ms:.1f} ms; "
+        f"return code {result.returncode}[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# loophole lift-c
+# ---------------------------------------------------------------------------
+
+@main.command(name="lift-c")
+@click.argument("source_files", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Output lifted MLIR file (default: print to stdout)")
+@click.option("--mlir-output", type=click.Path(), default=None,
+              help="Optional path to save intermediate MLIR from cgeist")
+@click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
+              default="linalg", show_default=True,
+              help="Target dialect to lift into")
+@click.option("--z3-timeout", type=int, default=10_000, show_default=True,
+              help="Z3 solver timeout per check in milliseconds")
+@click.option("--top-k", type=int, default=3, show_default=True,
+              help="Number of top SymPy candidates to verify with Z3")
+@click.option("--no-verify", is_flag=True,
+              help="Skip Z3 verification (emit based on SymPy match only)")
+@click.option("--report", is_flag=True, help="Print a summary verification report")
+@click.option("--language", "-x", type=click.Choice(["c", "cpp"]), default="c",
+              show_default=True, help="Source language for cgeist")
+@click.option("--function", default=None,
+              help="Optional entry function name to focus conversion")
+@click.option("--include-dir", "-I", multiple=True, type=click.Path(exists=True, file_okay=False),
+              help="Include directory (repeatable)")
+@click.option("--define", "-D", multiple=True,
+              help="Macro definition in KEY=VALUE form (repeatable)")
+@click.option("--std", default=None,
+              help="Language standard, e.g. c11, c17, c++17, c++20")
+@click.option("--clang-arg", multiple=True,
+              help="Extra argument forwarded to cgeist/clang (repeatable)")
+@click.option("--cgeist-bin", default="cgeist", show_default=True,
+              help="Path to cgeist executable")
+@click.option("--timeout-sec", type=int, default=60, show_default=True,
+              help="cgeist subprocess timeout in seconds")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
+def lift_c_cmd(
+    source_files: tuple[str, ...],
+    output: Optional[str],
+    mlir_output: Optional[str],
+    target: str,
+    z3_timeout: int,
+    top_k: int,
+    no_verify: bool,
+    report: bool,
+    language: str,
+    function: Optional[str],
+    include_dir: tuple[str, ...],
+    define: tuple[str, ...],
+    std: Optional[str],
+    clang_arg: tuple[str, ...],
+    cgeist_bin: str,
+    timeout_sec: int,
+    verbose: bool,
+):
+    """One-step flow: C/C++ source -> cgeist MLIR -> lifted tensor dialect."""
+    if not source_files:
+        raise click.UsageError("At least one source file is required.")
+
+    frontend = PolygeistFrontend(
+        cgeist_bin=cgeist_bin,
+        default_timeout_sec=timeout_sec,
+        verbose=verbose,
+    )
+    invocation = CgeistInvocation(
+        source_files=list(source_files),
+        language=language,
+        function=function,
+        include_dirs=list(include_dir),
+        defines=list(define),
+        std=std,
+        extra_clang_args=list(clang_arg),
+        timeout_sec=timeout_sec,
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console,
+    ) as progress:
+        task = progress.add_task("[cyan]Generating MLIR with cgeist...", total=None)
+        try:
+            cgeist_result = frontend.generate_mlir(invocation)
+        except PolygeistFrontendError as exc:
+            progress.advance(task)
+            _print_cgeist_error_and_exit(exc)
+        progress.advance(task)
+
+    if mlir_output:
+        Path(mlir_output).write_text(cgeist_result.mlir_text, encoding="utf-8")
+        if verbose:
+            console.print(f"[dim]Intermediate MLIR written to: {mlir_output}[/dim]")
+
+    lifter = Lifter(
+        target=target,
+        z3_timeout_ms=0 if no_verify else z3_timeout,
+        top_k=top_k,
+        verbose=verbose,
+    )
+    result = lifter.lift(cgeist_result.mlir_text)
+
+    if verbose:
+        console.print(
+            f"[dim]cgeist completed in {cgeist_result.elapsed_ms:.1f} ms with "
+            f"command: {' '.join(cgeist_result.command)}[/dim]"
+        )
+
+    _print_lift_result(result, output, report, verbose)
 
 
 # ---------------------------------------------------------------------------

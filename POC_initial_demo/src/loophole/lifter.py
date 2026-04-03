@@ -79,7 +79,7 @@ class LiftResult:
         if self.success:
             v = self.verification
             return (
-                f"[OK] Lifted '{self.func_name}' → {self.sketch_name}\n"
+                f"[OK] Lifted '{self.func_name}' -> {self.sketch_name}\n"
                 f"     Z3: {v.result.value} in {v.elapsed_ms:.1f}ms | "
                 f"SymPy conf: {self.sympy_confidence:.2f} | "
                 f"Total: {self.total_elapsed_ms:.1f}ms"
@@ -88,7 +88,7 @@ class LiftResult:
             v = self.verification
             status = v.result.value if v else "no verification"
             return (
-                f"[PARTIAL] '{self.func_name}' → {self.sketch_name} "
+                f"[PARTIAL] '{self.func_name}' -> {self.sketch_name} "
                 f"(Z3: {status}) SymPy conf: {self.sympy_confidence:.2f}"
             )
         return (
@@ -322,7 +322,7 @@ class Lifter:
             report = self._z3.check(loop, sketch)
 
             if self.verbose:
-                print(f"     → {report.result.value} in {report.elapsed_ms:.1f}ms")
+                print(f"     -> {report.result.value} in {report.elapsed_ms:.1f}ms")
 
             if report.result == CheckResult.EQUIVALENT:
                 return (sketch, report, conf)

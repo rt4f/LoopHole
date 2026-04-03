@@ -15,6 +15,28 @@
 
 ### 4.1.2 MLIR / LLVM Setup
 
+Windows users should prefer WSL2 Ubuntu for LLVM/MLIR/Polygeist builds. The repository includes runnable scripts for this path:
+
+```powershell
+# From Windows PowerShell at repo root
+./scripts/run_wsl_setup.ps1
+```
+
+Default mode is `native-clone` (build toolchain under WSL home). To force building from the in-repo Windows checkout path, run:
+
+```powershell
+./scripts/run_wsl_setup.ps1 -Mode windows-tree
+```
+
+Manual WSL equivalent:
+
+```bash
+cd /mnt/c/Users/Yasho/LoopHole
+chmod +x scripts/wsl_install_polygeist_native.sh scripts/wsl_smoke_test.sh
+./scripts/wsl_install_polygeist_native.sh ~/loophole-toolchain
+./scripts/wsl_smoke_test.sh /mnt/c/Users/Yasho/LoopHole ~/loophole-toolchain/polygeist/build/bin
+```
+
 **Option A: Pre-built Python wheels (fast start)**
 ```bash
 pip install mlir-python-bindings  # MLIR core Python bindings
@@ -62,6 +84,10 @@ echo 'void add(int* A, int* B, int* C, int n) {
 }' > test.c
 polygeist-opt --convert-polygeist-to-mlir test.c
 ```
+
+Current implementation note:
+- The existing POC parser still uses regex extraction (`POC_initial_demo/src/loophole/affine_extractor.py`).
+- Installing LLVM/MLIR/Polygeist now enables the next step: replacing regex parsing with real MLIR API traversal.
 
 ---
 

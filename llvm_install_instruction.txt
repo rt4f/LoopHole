@@ -1,6 +1,42 @@
-This is the instruction set I used to install llvm:
-First I cloned the repo and then ran this command:
-> cmake ..\llvm -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_ASSERTIONS=ON         
-> ninja -j 6
+LoopHole LLVM/MLIR + Polygeist installation instructions
 
-I have python on my system, please check the version and the compatibility with the modules and then create and use a venv. Also please create a gitignore and populate with all the relevant filepaths.
+Preferred path on Windows: WSL2 Ubuntu for reliable LLVM/MLIR/Polygeist builds.
+
+Prerequisites on Windows host:
+- WSL2 with Ubuntu (`wsl -l -v` should list Ubuntu version 2)
+- Git, CMake, Ninja, Python 3.10+
+
+Fast start from PowerShell (repository root):
+
+1. Run automated install + smoke test
+	`./scripts/run_wsl_setup.ps1`
+
+	This defaults to `native-clone` mode (toolchain cloned and built inside WSL home), which is more reliable than building from `/mnt/c`.
+
+	Optional mode for using the in-repo Windows checkout:
+	`./scripts/run_wsl_setup.ps1 -Mode windows-tree`
+
+2. Optional: run steps manually inside WSL
+	`wsl`
+	`cd /mnt/c/Users/Yasho/LoopHole`
+	`chmod +x scripts/wsl_install_polygeist_native.sh scripts/wsl_smoke_test.sh`
+	`./scripts/wsl_install_polygeist_native.sh ~/loophole-toolchain`
+	`./scripts/wsl_smoke_test.sh /mnt/c/Users/Yasho/LoopHole ~/loophole-toolchain/polygeist/build/bin`
+
+What the scripts do:
+- Install Ubuntu build dependencies
+- Build LLVM with `clang;mlir;lld`
+- Configure and build Polygeist against that LLVM build
+- Create a Python venv in `POC_initial_demo/.venv`
+- Install LoopHole (`pip install -e .[dev]`)
+- Run a cgeist -> MLIR -> loophole lift smoke flow and one baseline parser test
+
+Primary output locations:
+- LLVM/MLIR binaries: `Polygeist/llvm-project/build/bin`
+- Polygeist binaries: `Polygeist/build/bin`
+- cgeist: `Polygeist/build/bin/cgeist`
+- Smoke artifacts: `.tmp_smoke/`
+
+Notes:
+- Python 3.11.9 on this machine is compatible (`python_requires >= 3.10` in `POC_initial_demo/setup.py`).
+- Root `.gitignore` already includes virtualenv, build, LLVM, and test artifact patterns.

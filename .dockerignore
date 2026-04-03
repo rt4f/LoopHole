@@ -1,0 +1,10 @@
+# Keep Docker build context small and deterministic.
+*
+
+# Required for container build and runtime helpers
+!docker/
+!docker/**
+
+# Required for installing and running the POC
+!POC_initial_demo/
+!POC_initial_demo/**

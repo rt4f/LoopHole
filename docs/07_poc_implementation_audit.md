@@ -1,12 +1,21 @@
+<<<<<<< HEAD
 # 07 - POC Implementation Audit (What Exists, What Is Hardcoded, What Breaks)
 
 > Last updated: 2026-03-31
 > Scope: This is a code-and-doc reality audit for the current LoopHole POC, based on the implementation under `POC_initial_demo/` and the planning docs under `docs/`.
+=======
+# 07 - LoopHole POC Implementation Audit (Sequential Analysis)
+
+**Date:** 2026-03-31  
+**Scope:** Entire repository context with implementation deep-dive on `POC_initial_demo/`  
+**Method:** Sequential pass over docs -> source -> tests -> runtime behavior -> limitations -> fixes
+>>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
 
 ---
 
 ## 1. Executive Summary
 
+<<<<<<< HEAD
 This POC is implemented and runnable, but it is still a research-grade prototype with heuristic matching, partial formal verification, and several hardcoded shortcuts.
 
 Current state at a glance:
@@ -321,3 +330,532 @@ It is not yet reliable for:
 - robust operation on arbitrary real-world MLIR text without parser edge cases
 
 The fastest path to production-grade reliability is to harden verification semantics first (especially handling of `NOT_EQUIVALENT`), then remove emitter/parser defaulting that can silently produce plausible but wrong outputs.
+=======
+This repository contains two major tracks:
+
+1. **Research/design track** in `docs/01..06` (architecture, SOTA, roadmap, research direction).
+2. **Working Python POC** in `POC_initial_demo/` implementing a lift pipeline:
+   - parse affine-style MLIR text,
+   - match to operation sketches,
+   - attempt formal equivalence with Z3,
+   - emit Linalg or StableHLO MLIR text.
+
+Current implementation status:
+
+- **Core POC is implemented and runnable**.
+- **Unit/integration tests currently pass**: `96 passed, 1 skipped`.
+- **CLI demo works**, but with partial results on several kernels.
+- **Standalone example demo script is broken**.
+- **There are important correctness and soundness limitations** in verification fallback logic and several hardcoded/stubbed code paths.
+
+---
+
+## 2. Sequential Findings (What Was Checked)
+
+### Pass 1 - Project intent and architecture docs
+
+Reviewed:
+- `docs/01_project_overview.md`
+- `docs/02_state_of_the_art.md`
+- `docs/03_mlir_architecture.md`
+- `docs/04_implementation_roadmap.md`
+- `docs/05_novel_research_directions.md`
+- `docs/06_references.md`
+- `README.md`
+- `PROBLEM_STATEMENT.md`
+- `architecture.mmd`
+
+Outcome:
+- Clear target architecture and research framing are documented.
+- `README.md` still describes project status as pre-implementation, while `POC_initial_demo/` already contains substantial implementation.
+
+### Pass 2 - POC source audit
+
+Reviewed all modules under `POC_initial_demo/src/loophole/`:
+- `affine_extractor.py`
+- `sketch_library.py`
+- `sympy_tracer.py`
+- `z3_checker.py`
+- `emitter.py`
+- `lifter.py`
+- `cli.py`
+- package exports in `__init__.py`
+
+Also reviewed:
+- Embedded fixtures: `POC_initial_demo/src/loophole/tests/fixtures.py`
+- Example script: `POC_initial_demo/examples/run_demo.py`
+
+### Pass 3 - Test and runtime validation
+
+Executed:
+- `pytest -q -rs` in `POC_initial_demo/` -> `96 passed, 1 skipped`.
+- `loophole demo --target linalg` -> pipeline runs; `7/10` formally proved and `3` partial.
+- `loophole lift tests/fixtures/matmul.mlir --target stablehlo --report` -> formally proved and emits StableHLO.
+- `examples/run_demo.py --mode demo` -> fails at runtime (`NameError: re is not defined`).
+
+---
+
+## 3. What Has Been Implemented
+
+## 3.1 Repository-level implementation map
+
+| Area | Status | Notes |
+|---|---|---|
+| Research documentation (`docs/01..06`) | Implemented | Strong conceptual coverage and roadmap. |
+| Environment/bootstrap scripts (`scripts/`) | Implemented | WSL-centric installation paths documented. |
+| Full LLVM/Polygeist trees in workspace | Present | Heavy toolchain sources/build artifacts are included in workspace. |
+| POC Python package (`POC_initial_demo`) | Implemented | Main functional deliverable. |
+
+## 3.2 POC pipeline implementation
+
+### Stage 1: MLIR text extraction (`affine_extractor.py`)
+
+Implemented:
+- Regex-based parsing of:
+  - `func.func`,
+  - `affine.for` and fallback `scf.for`,
+  - `affine.load/store`, fallback `memref.load/store`,
+  - key `arith.*` ops.
+- Builds a structured `LoopNestInfo` object:
+  - loop IVs/bounds/order,
+  - reads/writes,
+  - compute ops,
+  - tensor shapes/types,
+  - reduction/parallel classification,
+  - accumulation detection.
+
+### Stage 2: Sketch library (`sketch_library.py`)
+
+Implemented:
+- `OperationSketch` model with:
+  - indexing maps,
+  - iterator types,
+  - compute payload classification,
+  - operand counts.
+- `SKETCH_LIBRARY` currently contains **25 sketches**:
+  - **22 Linalg**
+  - **3 StableHLO**
+- Dialect subsets and lookup maps are exposed.
+
+### Stage 3: SymPy symbolic tracer (`sympy_tracer.py`)
+
+Implemented:
+- Converts loop ops into symbolic SymPy expressions.
+- Computes heuristic confidence scores per sketch.
+- Includes convolution-specific recognizer for sliding-window patterns.
+
+### Stage 4: Z3 checker (`z3_checker.py`)
+
+Implemented:
+- Structural pre-filter before expensive checking.
+- Concrete verification path (unrolled where feasible).
+- Reduction handling (explicit unroll and RecFunction fallback).
+- Bidirectional implication checks for equivalence.
+- Returns `VerificationReport` with enum status and timing.
+
+### Stage 5: Emitters (`emitter.py`)
+
+Implemented:
+- Linalg emitter with named-op handlers (matmul, transpose, convs, reductions, etc).
+- Generic fallback emission via `linalg.generic`.
+- StableHLO emitter for dot/convolution/reduce variants.
+
+### Orchestration (`lifter.py`)
+
+Implemented:
+- End-to-end pipeline orchestration.
+- Candidate matching by structural filter + SymPy confidence.
+- Top-k Z3 verification and fallback behavior.
+- `LiftResult` status model with summary formatting.
+
+### CLI (`cli.py`)
+
+Implemented commands:
+- `lift`
+- `verify`
+- `batch`
+- `sketches`
+- `demo`
+
+Installed console entry point:
+- `loophole=loophole.cli:main`
+
+---
+
+## 4. Current Behavior Snapshot
+
+## 4.1 Test status
+
+Command:
+
+```bash
+pytest -q -rs
+```
+
+Observed:
+- `96 passed, 1 skipped`
+- skipped case:
+  - `tests/unit/test_z3_checker.py:77` skipped due name-based search for `elementwise_add` sketch string.
+
+Interpretation:
+- Core pipeline paths are tested and currently stable for tested kernels.
+- There are still coverage gaps (see Section 6.5).
+
+## 4.2 CLI demo behavior
+
+Command:
+
+```bash
+loophole demo --target linalg
+```
+
+Observed summary:
+- `7/10 formally proved`
+- `3 partial`
+
+Partial kernels shown by CLI run:
+- `conv2d_simple` -> `NOT_EQUIVALENT` (still emitted as partial)
+- `conv2d_nhwc` -> `NOT_EQUIVALENT` (still emitted as partial)
+- `dot_product` -> `NOT_EQUIVALENT` (still emitted as partial)
+
+Also observed:
+- `relu` was matched as `linalg.map{arith.mulf_scalar}` and reported `EQUIVALENT`.
+  - This is a **high-risk correctness signal** because ReLU semantics are `max(x,0)`, not scalar multiply.
+
+## 4.3 Standalone demo script status
+
+Command:
+
+```bash
+python examples/run_demo.py --mode demo
+```
+
+Observed:
+- Runtime failure: `NameError: name 're' is not defined`.
+- Additional stale API references still exist in script (`result.linalg_mlir`, `result.stablehlo_mlir`) that no longer match current `LiftResult` fields.
+
+---
+
+## 5. Limitations, Stubs, and Hardcoding Inventory
+
+This section explicitly lists where hardcoding or placeholder behavior exists, with practical impact.
+
+## 5.1 Verification status semantics (high impact)
+
+### A) `partial_success` is too permissive
+
+Location:
+- `POC_initial_demo/src/loophole/lifter.py` (property `partial_success`)
+
+Current behavior:
+- Returns `True` whenever a sketch matched and MLIR was emitted.
+- Does **not** require Z3 timeout/unknown.
+- Includes cases where Z3 returned `NOT_EQUIVALENT`.
+
+Impact:
+- User-facing status can look acceptable even when formal check disproved equivalence.
+
+Fix:
+- Redefine `partial_success` to include only:
+  - `verification is None` (if explicit no-verify mode), or
+  - `verification.result in {TIMEOUT, UNKNOWN}`.
+- Exclude `NOT_EQUIVALENT` from partial-success path.
+
+### B) Non-equivalent candidates accepted as fallback
+
+Location:
+- `POC_initial_demo/src/loophole/lifter.py` in `_verify_candidates`
+
+Current behavior:
+- If Z3 says `NOT_EQUIVALENT` and SymPy confidence >= 0.7, candidate can still become fallback.
+
+Impact:
+- Can produce emitted IR tagged as partial despite failed formal check.
+
+Fix:
+- Remove `NOT_EQUIVALENT` fallback branch.
+- Keep fallback only for `TIMEOUT`/`UNKNOWN`.
+
+## 5.2 Z3 encoding stubs and approximations (high impact)
+
+### C) RecFunction reduction supports only one reduction IV
+
+Location:
+- `POC_initial_demo/src/loophole/z3_checker.py` (`_recfunc_reduction`)
+
+Current behavior:
+- Explicit comment and logic: uses only `loop.reduction_vars[0]`.
+
+Impact:
+- Multi-dimensional reductions are not fully modeled in symbolic path.
+
+Fix:
+- Generalize reduction recurrence to nested dimensions, or
+- Encode with quantified sums/auxiliary functions over tuples.
+
+### D) Sketch reduction unroll handles only first reduction dim
+
+Location:
+- `POC_initial_demo/src/loophole/z3_checker.py` (`_build_sketch_rhs`)
+
+Current behavior:
+- Iterates zipped reduction dims then `break` after first dim.
+
+Impact:
+- Incomplete semantic encoding for multi-reduction ops (e.g., conv2d-like patterns).
+
+Fix:
+- Replace single-dim loop with cartesian-product iteration over all reduction dims.
+
+### E) Symbolic reduction path returns zero placeholder
+
+Location:
+- `POC_initial_demo/src/loophole/z3_checker.py` (`_build_sketch_rhs`)
+
+Current behavior:
+- For non-unrollable symbolic reductions, returns `RealVal(0)`.
+
+Impact:
+- Symbolic verification can be under-constrained or misleading.
+
+Fix:
+- Replace placeholder with real symbolic reduction encoding (recursive or quantified).
+
+### F) Symbolic verification is "representative instance" check
+
+Location:
+- `POC_initial_demo/src/loophole/z3_checker.py` (`_verify_symbolic`)
+
+Current behavior:
+- Instantiates symbolic bounds to size 4 and verifies concretely.
+
+Impact:
+- This is not a full symbolic proof; may miss size-dependent bugs.
+
+Fix:
+- Label as bounded check only, or
+- Implement true universally quantified symbolic proof strategy.
+
+### G) Elementwise MAX/ReLU semantics not robustly distinguished
+
+Locations:
+- `POC_initial_demo/src/loophole/z3_checker.py` (`_infer_compute_payload`, `_build_elementwise_expr`)
+
+Current behavior:
+- ReLU-like forms can be inferred as generic max or even collapse to pass-through under single-read handling.
+
+Impact:
+- Potential unsound equivalence results (as seen in demo: ReLU matched to scalar multiply).
+
+Fix:
+- Detect and track constants used in max operations.
+- Add explicit ReLU pattern extraction (`max(read, 0)`).
+- Add strict negative tests: ReLU must not verify as scale/copy.
+
+## 5.3 Parser limitations and hardcoded assumptions (medium/high impact)
+
+### H) Regex parser instead of MLIR AST parser
+
+Location:
+- `POC_initial_demo/src/loophole/affine_extractor.py`
+
+Current behavior:
+- Parsing is regex-driven with simplified syntax assumptions.
+
+Impact:
+- Fragile against valid MLIR syntactic variations.
+- Complex affine maps/attributes/layouts may parse incorrectly.
+
+Fix:
+- Move to MLIR Python bindings once environment supports them.
+- Until then, use a formal grammar parser for MLIR text subset.
+
+### I) IV role classification uses substring checks
+
+Location:
+- `POC_initial_demo/src/loophole/affine_extractor.py` (`_classify_iv_roles`)
+
+Current behavior:
+- Determines IV presence via `if iv in expr` substring matching.
+
+Impact:
+- Risk of false positives (`i` in `i0`, etc.) and misclassification.
+
+Fix:
+- Tokenize index expressions and match identifiers, not substrings.
+
+## 5.4 Emitter hardcoded defaults (medium impact)
+
+### J) Default fallback shapes hardcoded across many handlers
+
+Location:
+- `POC_initial_demo/src/loophole/emitter.py`
+
+Current behavior:
+- Many `shapes.get(..., [4,4])`, `[8,8]`, `[16]`, etc.
+
+Impact:
+- If extraction misses shape metadata, emitted IR may be syntactically valid but semantically wrong.
+
+Fix:
+- Fail fast on missing required shape metadata for named ops.
+- Keep fallback only for explicit debug mode.
+
+### K) StableHLO reduction dimensions hardcoded
+
+Location:
+- `POC_initial_demo/src/loophole/emitter.py` (`_emit_reduce`)
+
+Current behavior:
+- Uses fixed `across dimensions = [1]`.
+
+Impact:
+- Wrong for many reduction layouts/ranks.
+
+Fix:
+- Infer reduction dims from loop roles and indexing maps.
+
+## 5.5 CLI and tooling gaps (medium impact)
+
+### L) `--no-verify` option does not actually skip verification
+
+Location:
+- `POC_initial_demo/src/loophole/cli.py` (`lift_cmd`)
+
+Current behavior:
+- Sets `z3_timeout_ms=0`; does not bypass checker.
+
+Impact:
+- Misleading CLI semantics.
+
+Fix:
+- Add explicit `verify: bool` flag into `Lifter`, and bypass `_verify_candidates` when false.
+
+### M) `python -m loophole.cli ...` path is non-functional
+
+Location:
+- `POC_initial_demo/src/loophole/cli.py`
+
+Current behavior:
+- No `if __name__ == "__main__": main()` block.
+
+Impact:
+- Module execution gives no command dispatch.
+
+Fix:
+- Add module entry guard for developer convenience.
+
+### N) Standalone demo script stale and broken
+
+Location:
+- `POC_initial_demo/examples/run_demo.py`
+
+Current behavior:
+- Missing `import re`.
+- Uses stale fields (`result.linalg_mlir`, `result.stablehlo_mlir`) not present in current `LiftResult`.
+
+Impact:
+- Example script fails and misrepresents current API.
+
+Fix:
+- Add `import re`.
+- Replace stale fields with `result.emitted_mlir` and target-aware logic.
+
+## 5.6 Fixture and documentation drift (low/medium impact)
+
+### O) Embedded fixture inconsistency
+
+Location:
+- `POC_initial_demo/src/loophole/tests/fixtures.py` (`MATVEC_MLIR`)
+
+Current behavior:
+- Store type for `%y` uses `memref<4x4xf32>` while argument type is `memref<4xf32>`.
+
+Impact:
+- Can mask parser/type checking issues in fixture-based tests.
+
+Fix:
+- Correct fixture type annotation.
+
+### P) Documentation drift on sketch count
+
+Locations:
+- `POC_initial_demo/POC_DOCUMENTATION.md` (states 26 sketches)
+- `POC_initial_demo/src/loophole/sketch_library.py` (actual 25 sketches)
+
+Impact:
+- Confusion in expected behavior/capability reporting.
+
+Fix:
+- Update documentation to real counts and regenerate diagrams/tables.
+
+---
+
+## 6. Coverage Gaps
+
+Current tests are strong for core flow but still leave gaps:
+
+1. No integration test for ReLU end-to-end correctness.
+2. No tests guarding against false equivalence between different elementwise ops.
+3. No tests for `--no-verify` behavior.
+4. No tests for CLI module execution (`python -m loophole.cli`).
+5. No tests for `examples/run_demo.py` script health.
+6. Skip reason in z3 unit tests indicates sketch-name coupling mismatch (`elementwise_add` string expectation).
+
+---
+
+## 7. Prioritized Fix Plan
+
+## P0 - Correctness and trustworthiness (must do first)
+
+1. Tighten success model:
+   - disallow `NOT_EQUIVALENT` as partial success.
+2. Remove high-confidence override for `NOT_EQUIVALENT` in `_verify_candidates`.
+3. Fix Z3 sketch reduction encoding to support all reduction dimensions.
+4. Replace symbolic `0` placeholders with real symbolic encodings or fail explicitly.
+5. Add strict negative tests (ReLU vs scale, dot vs matmul, etc.).
+
+## P1 - Semantic robustness
+
+1. Improve compute payload inference for constants and unary max forms.
+2. Tokenize index expressions for robust IV classification.
+3. Reduce shape hardcoding in emitter and fail fast on missing metadata.
+4. Infer StableHLO reduction dimensions from extracted loop semantics.
+
+## P2 - Developer UX and maintainability
+
+1. Fix `examples/run_demo.py`.
+2. Implement true `--no-verify` semantics.
+3. Add `if __name__ == "__main__": main()` to CLI module.
+4. Sync POC documentation counts and examples with current code.
+
+## P3 - Strategic evolution toward planned architecture
+
+1. Replace regex extractor with MLIR AST-driven parsing (when environment supports bindings).
+2. Expand formal proof support for dynamic shapes and multi-dimensional reductions.
+3. Add translation-validation step by running emitted MLIR through `mlir-opt` in CI.
+
+---
+
+## 8. Practical "How This POC Works" Summary
+
+If you want to explain the POC in one paragraph:
+
+> The POC takes affine-style loop MLIR text, extracts loop/memory/math structure with a regex parser, scores operation sketches using SymPy-based heuristics, checks top candidates with a Z3 equivalence engine, and emits higher-level Linalg or StableHLO MLIR. It works well for the tested dense kernels, but currently uses several approximation/fallback paths (especially in verification and status handling), so partial results and even some proved results should be interpreted carefully until the P0/P1 fixes are completed.
+
+---
+
+## 9. Recommended Immediate Actions (Next 1-2 Days)
+
+1. Fix `run_demo.py` and add a regression test so the public demo path is always green.
+2. Patch `partial_success` and `_verify_candidates` to prevent `NOT_EQUIVALENT` from being treated as acceptable output.
+3. Add a dedicated ReLU integration test that fails if matched to scale/copy.
+4. Correct `MATVEC_MLIR` fixture type inconsistency.
+5. Update `POC_DOCUMENTATION.md` sketch counts and verification status semantics.
+
+---
+
+## 10. Final Status Statement
+
+The POC is not a stub: it is a real, runnable lifting system with meaningful functionality, passing tests, and working CLI output. However, it is still a research-stage prototype with important correctness-risk shortcuts and hardcoded assumptions. Treat current results as strong feasibility evidence, not yet production-grade translation guarantees.
+>>>>>>> e4273a6 (C-01, C-02, C-03: Fix demo script, add smoke test, wire strict-mode integration test)
