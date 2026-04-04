@@ -23,6 +23,7 @@ Usage examples:
 from __future__ import annotations
 
 import json
+import fnmatch
 import os
 import shlex
 import subprocess
@@ -798,6 +799,50 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
 # loophole batch
 # ---------------------------------------------------------------------------
 
+
+def _collect_batch_mlir_files(
+    in_path: Path,
+    include_globs: tuple[str, ...],
+    exclude_globs: tuple[str, ...],
+    max_files: Optional[int],
+) -> tuple[list[Path], int]:
+    include_patterns = include_globs or ("**/*.mlir",)
+    seen: set[Path] = set()
+    matched: list[Path] = []
+
+    for pattern in include_patterns:
+        for candidate in in_path.glob(pattern):
+            if not candidate.is_file() or candidate.suffix.lower() != ".mlir":
+                continue
+            # Avoid recursive re-processing of previously generated artifacts.
+            if candidate.name.endswith("_lifted.mlir"):
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            matched.append(candidate)
+
+    matched.sort(key=lambda path: path.relative_to(in_path).as_posix())
+
+    if exclude_globs:
+        filtered: list[Path] = []
+        for candidate in matched:
+            rel_path = candidate.relative_to(in_path).as_posix()
+            if any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude_globs):
+                continue
+            filtered.append(candidate)
+        matched = filtered
+
+    matched_before_limit = len(matched)
+    if max_files is not None:
+        if max_files < 1:
+            raise click.UsageError("--max-files must be >= 1 when provided.")
+        matched = matched[:max_files]
+
+    return matched, matched_before_limit
+
+
 @main.command()
 @click.argument("input_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--output-dir", "-o", type=click.Path(), default=None,
@@ -813,6 +858,18 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
 @click.option("--report", is_flag=True, help="Write JSON report for batch run")
 @click.option("--report-path", type=click.Path(path_type=Path), default=None,
               help="Optional JSON report path (default: <output-dir>/loophole_report.json)")
+@click.option("--include-glob", "include_globs", multiple=True, default=("**/*.mlir",), show_default=True,
+              help="Glob pattern (relative to input dir) to include; repeatable")
+@click.option("--exclude-glob", "exclude_globs", multiple=True, default=(),
+              help="Glob pattern (relative to input dir) to exclude; repeatable")
+@click.option("--max-files", type=int, default=None,
+              help="Process at most N files after include/exclude filtering")
+@click.option("--table-limit", type=int, default=100, show_default=True,
+              help="Limit displayed per-file rows in terminal output")
+@click.option("--write-emitted/--no-write-emitted", default=True, show_default=True,
+              help="Write emitted *_lifted.mlir artifacts")
+@click.option("--top-slowest", type=int, default=10, show_default=True,
+              help="Show N slowest files in terminal summary (0 to disable)")
 @click.option("--validate-emitted", is_flag=True,
               help="Validate emitted MLIR using an external verifier command")
 @click.option("--mlir-verifier", default=None,
@@ -827,6 +884,12 @@ def batch(
     z3_timeout: Optional[int],
     report: bool,
     report_path: Optional[Path],
+    include_globs: tuple[str, ...],
+    exclude_globs: tuple[str, ...],
+    max_files: Optional[int],
+    table_limit: int,
+    write_emitted: bool,
+    top_slowest: int,
     validate_emitted: bool,
     mlir_verifier: Optional[str],
     verbose: bool,
@@ -836,13 +899,25 @@ def batch(
 
     INPUT_DIR: Directory containing .mlir Affine IR files.
     """
+    if table_limit < 1:
+        raise click.UsageError("--table-limit must be >= 1.")
+    if top_slowest < 0:
+        raise click.UsageError("--top-slowest must be >= 0.")
+
     in_path = Path(input_dir)
     out_path = Path(output_dir) if output_dir else in_path
     out_path.mkdir(parents=True, exist_ok=True)
 
-    mlir_files = list(in_path.glob("**/*.mlir"))
+    mlir_files, matched_before_limit = _collect_batch_mlir_files(
+        in_path=in_path,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+        max_files=max_files,
+    )
     if not mlir_files:
-        console.print(f"[yellow]No .mlir files found in {input_dir}[/yellow]")
+        console.print(
+            f"[yellow]No .mlir files found in {input_dir} for the requested selection filters.[/yellow]"
+        )
         return
 
     resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
@@ -863,6 +938,8 @@ def batch(
         LiftResultState.REFUTED: 0,
     }
     validation_failed = 0
+    displayed_rows = 0
+    timings: list[dict[str, object]] = []
 
     verifier_cmd = None
     if validate_emitted:
@@ -890,10 +967,11 @@ def batch(
     ) as progress:
         task = progress.add_task("[cyan]Processing...", total=len(mlir_files))
 
-        for mlir_file in sorted(mlir_files):
+        for mlir_file in mlir_files:
             src = mlir_file.read_text(encoding="utf-8")
             result = lifter.lift(src)
 
+            rel_file = mlir_file.relative_to(in_path).as_posix()
             state = result.result_state
             state_counts[state] += 1
             state_label = state.value.upper()
@@ -908,18 +986,22 @@ def batch(
             conf_str = f"{result.sympy_confidence:.2f}"
             ms_str = f"{result.total_elapsed_ms:.0f}"
 
-            table.add_row(
-                mlir_file.name,
-                f"[{state_color}]{sketch_str}[/{state_color}]",
-                f"[{state_color}]{state_label}[/{state_color}]",
-                z3_str,
-                conf_str,
-                ms_str,
-            )
+            if displayed_rows < table_limit:
+                table.add_row(
+                    rel_file,
+                    f"[{state_color}]{sketch_str}[/{state_color}]",
+                    f"[{state_color}]{state_label}[/{state_color}]",
+                    z3_str,
+                    conf_str,
+                    ms_str,
+                )
+                displayed_rows += 1
 
             emitted_path = None
-            if result.emitted_mlir:
-                out_file = out_path / (mlir_file.stem + "_lifted.mlir")
+            if write_emitted and result.emitted_mlir:
+                rel_source = mlir_file.relative_to(in_path)
+                out_file = out_path / rel_source.parent / f"{rel_source.stem}_lifted.mlir"
+                out_file.parent.mkdir(parents=True, exist_ok=True)
                 out_file.write_text(result.emitted_mlir, encoding="utf-8")
                 emitted_path = str(out_file)
 
@@ -928,14 +1010,24 @@ def batch(
                     if not validation.ok:
                         validation_failed += 1
                         console.print(
-                            f"[red]Validation failed[/red] for {mlir_file.name} via [dim]{verifier_cmd}[/dim]"
+                            f"[red]Validation failed[/red] for {rel_file} via [dim]{verifier_cmd}[/dim]"
                         )
                         detail = validation.stderr or validation.stdout
                         if detail:
                             console.print(Panel(detail[:1200], title="Verifier output", border_style="red"))
 
+            timings.append(
+                {
+                    "file_rel": rel_file,
+                    "state": state_label,
+                    "state_color": state_color,
+                    "elapsed_ms": result.total_elapsed_ms,
+                }
+            )
+
             results.append({
                 "file": str(mlir_file),
+                "file_rel": rel_file,
                 "file_name": mlir_file.name,
                 "sketch": result.sketch_name,
                 "state": state_label,
@@ -961,6 +1053,9 @@ def batch(
     refuted = state_counts[LiftResultState.REFUTED]
 
     console.print(table)
+    if total > displayed_rows:
+        console.print(f"[dim]Displayed {displayed_rows} of {total} rows. Use --table-limit to adjust.[/dim]")
+
     console.print(
         f"\n[bold]Summary:[/bold] "
         f"[green]{proved} PROVED[/green] / "
@@ -969,9 +1064,34 @@ def batch(
         f"out of {total} files"
     )
 
+    if top_slowest > 0 and timings:
+        slowest_rows = sorted(
+            timings,
+            key=lambda row: float(row["elapsed_ms"]),
+            reverse=True,
+        )[:top_slowest]
+
+        slowest_table = Table(title="Slowest Files", show_header=True)
+        slowest_table.add_column("File", style="cyan")
+        slowest_table.add_column("State")
+        slowest_table.add_column("ms")
+        for row in slowest_rows:
+            slowest_table.add_row(
+                str(row["file_rel"]),
+                f"[{row['state_color']}]{row['state']}[/{row['state_color']}]",
+                f"{float(row['elapsed_ms']):.0f}",
+            )
+        console.print(slowest_table)
+
     if report:
         resolved_report_path = report_path or (out_path / "loophole_report.json")
         resolved_report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        slowest_rows = sorted(
+            timings,
+            key=lambda row: float(row["elapsed_ms"]),
+            reverse=True,
+        )[: min(25, len(timings))]
 
         report_payload = {
             "schema_version": "1.0",
@@ -980,6 +1100,13 @@ def batch(
             "output_dir": str(out_path),
             "target": target,
             "z3_timeout_ms": lifter.z3_timeout_ms,
+            "selection": {
+                "include_globs": list(include_globs),
+                "exclude_globs": list(exclude_globs),
+                "max_files": max_files,
+                "matched_before_limit": matched_before_limit,
+                "processed_files": total,
+            },
             "summary": {
                 "total_files": total,
                 "proved": proved,
@@ -989,7 +1116,16 @@ def batch(
                 "strict_mode": effective_strict,
                 "accepted_loose": sum(1 for r in results if r["accepted_loose"]),
                 "accepted_strict": sum(1 for r in results if r["accepted_strict"]),
+                "write_emitted": write_emitted,
             },
+            "slowest": [
+                {
+                    "file_rel": str(row["file_rel"]),
+                    "state": str(row["state"]),
+                    "elapsed_ms": float(row["elapsed_ms"]),
+                }
+                for row in slowest_rows
+            ],
             "results": results,
         }
 
@@ -1002,6 +1138,8 @@ def batch(
     if validate_emitted and validation_failed:
         sys.exit(1)
 
+    if effective_strict and (unproved_timeout > 0 or refuted > 0):
+        sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # loophole sketches

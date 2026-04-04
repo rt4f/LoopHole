@@ -223,3 +223,105 @@ def test_batch_strict_flag_overrides_profile_strictness(monkeypatch, tmp_path) -
     assert result.exit_code == 0
     assert captured["profile_name"] == "local-explore"
     assert captured["strict_mode"] is True
+
+
+def test_batch_selection_filters_and_limits_are_reported(monkeypatch, tmp_path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "one.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    (tmp_path / "b" / "two.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    (tmp_path / "b" / "skip.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=False)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    report_path = tmp_path / "selection_report.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--include-glob",
+            "**/*.mlir",
+            "--exclude-glob",
+            "b/skip.mlir",
+            "--max-files",
+            "1",
+            "--report",
+            "--report-path",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["selection"]["matched_before_limit"] == 2
+    assert payload["summary"]["total_files"] == 1
+    assert payload["results"][0]["file_rel"] == "a/one.mlir"
+
+
+def test_batch_emitted_outputs_preserve_relative_layout(monkeypatch, tmp_path) -> None:
+    (tmp_path / "case_a").mkdir()
+    (tmp_path / "case_b").mkdir()
+    (tmp_path / "case_a" / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    (tmp_path / "case_b" / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+
+    sequence = iter(
+        [
+            _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True),
+            _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True),
+        ]
+    )
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return next(sequence)
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    output_dir = tmp_path / "out"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (output_dir / "case_a" / "kernel_lifted.mlir").exists()
+    assert (output_dir / "case_b" / "kernel_lifted.mlir").exists()
+
+
+def test_batch_no_write_emitted_keeps_output_clean(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    output_dir = tmp_path / "out"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--output-dir",
+            str(output_dir),
+            "--no-write-emitted",
+            "--report",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert list(output_dir.rglob("*_lifted.mlir")) == []
