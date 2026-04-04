@@ -42,11 +42,15 @@ class EmissionError(ValueError):
 # ---------------------------------------------------------------------------
 
 def _memref_type(shape: List[int], elem: str) -> str:
+    if not shape:
+        return f"memref<{elem}>"
     dims = "x".join(str(d) if d > 0 else "?" for d in shape)
     return f"memref<{dims}x{elem}>"
 
 
 def _tensor_type(shape: List[int], elem: str) -> str:
+    if not shape:
+        return f"tensor<{elem}>"
     dims = "x".join(str(d) if d > 0 else "?" for d in shape)
     return f"tensor<{dims}x{elem}>"
 
@@ -1107,16 +1111,25 @@ class StableHLOEmitter:
         name = func_name or f"lifted_{loop.func_name}"
         et = _map_elem_type(loop.element_type)
 
-        if "dot_general" in sketch.name or sketch.name == "stablehlo.dot_general":
+        if "dot_general" in sketch.name:
             body = self._emit_dot_general(sketch, loop, name, et)
         elif "convolution" in sketch.name:
             body = self._emit_convolution(sketch, loop, name, et)
+        elif "transpose" in sketch.name:
+            body = self._emit_transpose(sketch, loop, name, et)
+        elif sketch.compute_payload in (
+            ComputePayloadType.ADD,
+            ComputePayloadType.SUBTRACT,
+            ComputePayloadType.MULTIPLY,
+            ComputePayloadType.RELU,
+        ):
+            body = self._emit_elementwise(sketch, loop, name, et)
         elif "reduce" in sketch.name:
             body = self._emit_reduce(sketch, loop, name, et)
         else:
             raise EmissionError(
                 f"Unsupported StableHLO sketch '{sketch.name}' for emission. "
-                "Expected one of dot_general/convolution/reduce families."
+                "Expected one of dot_general/convolution/transpose/elementwise/reduce families."
             )
 
         lines = [
@@ -1134,14 +1147,27 @@ class StableHLOEmitter:
         self, sketch: OperationSketch, loop: LoopNestInfo, name: str, et: str
     ) -> str:
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%C'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        B_name = input_tensors[1] if len(input_tensors) > 1 else '%B'
-        A_shape = shapes.get(A_name, [4, 4])
-        B_shape = shapes.get(B_name, [4, 4])
-        C_shape = [A_shape[0], B_shape[1]] if len(B_shape) > 1 else [A_shape[0], 1]
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, B_name, sketch.name)
+        C_shape = _require_shape(shapes, out, sketch.name)
+
+        if len(A_shape) == 2 and len(B_shape) == 2:
+            lhs_contract, rhs_contract = "[1]", "[0]"
+        elif len(A_shape) == 2 and len(B_shape) == 1:
+            lhs_contract, rhs_contract = "[1]", "[0]"
+        elif len(A_shape) == 1 and len(B_shape) == 1:
+            lhs_contract, rhs_contract = "[0]", "[0]"
+        elif len(A_shape) == 1 and len(B_shape) == 2:
+            lhs_contract, rhs_contract = "[0]", "[0]"
+        else:
+            raise EmissionError(
+                f"Unsupported dot_general rank combination for '{sketch.name}': "
+                f"lhs rank {len(A_shape)}, rhs rank {len(B_shape)}."
+            )
 
         A_type = _tensor_type(A_shape, et)
         B_type = _tensor_type(B_shape, et)
@@ -1150,9 +1176,121 @@ class StableHLOEmitter:
         return (
             f"  func.func @{name}(%A: {A_type}, %B: {B_type}) -> {C_type} {{\n"
             f"    %result = stablehlo.dot_general %A, %B,\n"
-            f"      contracting_dims = [1] x [0]\n"
+            f"      contracting_dims = {lhs_contract} x {rhs_contract}\n"
             f"      : ({A_type}, {B_type}) -> {C_type}\n"
             f"    return %result : {C_type}\n"
+            f"  }}"
+        )
+
+    def _emit_transpose(
+        self, sketch: OperationSketch, loop: LoopNestInfo, name: str, et: str
+    ) -> str:
+        shapes = loop.tensor_shapes
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
+
+        if not loop.writes:
+            raise EmissionError(
+                f"Cannot infer transpose permutation for '{sketch.name}': no write access pattern found."
+            )
+
+        write_exprs = loop.writes[0].index_exprs
+        if len(write_exprs) != len(A_shape):
+            raise EmissionError(
+                f"Cannot infer transpose permutation for '{sketch.name}': output index rank "
+                f"{len(write_exprs)} does not match input rank {len(A_shape)}."
+            )
+
+        iv_to_pos = {iv: i for i, iv in enumerate(loop.induction_vars)}
+        perm: List[int] = []
+        for expr in write_exprs:
+            token = expr.strip()
+            if token not in iv_to_pos:
+                raise EmissionError(
+                    f"Cannot infer transpose permutation for '{sketch.name}': "
+                    f"non-trivial output index expression '{expr}'."
+                )
+            perm.append(iv_to_pos[token])
+
+        if sorted(perm) != list(range(len(A_shape))):
+            raise EmissionError(
+                f"Invalid transpose permutation for '{sketch.name}': {perm}."
+            )
+
+        expected_B = [A_shape[p] for p in perm]
+        if expected_B != B_shape:
+            raise EmissionError(
+                f"Transpose permutation does not match output shape for '{sketch.name}'. "
+                f"Expected {expected_B}, got {B_shape}."
+            )
+
+        A_type = _tensor_type(A_shape, et)
+        B_type = _tensor_type(B_shape, et)
+        perm_str = "[" + ", ".join(str(p) for p in perm) + "]"
+
+        return (
+            f"  func.func @{name}(%A: {A_type}) -> {B_type} {{\n"
+            f"    %result = stablehlo.transpose %A, dims = {perm_str}\n"
+            f"      : ({A_type}) -> {B_type}\n"
+            f"    return %result : {B_type}\n"
+            f"  }}"
+        )
+
+    def _emit_elementwise(
+        self, sketch: OperationSketch, loop: LoopNestInfo, name: str, et: str
+    ) -> str:
+        shapes = loop.tensor_shapes
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        O_shape = _require_shape(shapes, out, sketch.name)
+        A_type = _tensor_type(A_shape, et)
+        O_type = _tensor_type(O_shape, et)
+
+        if sketch.compute_payload == ComputePayloadType.RELU:
+            return (
+                f"  func.func @{name}(%A: {A_type}) -> {O_type} {{\n"
+                f"    %zero = stablehlo.constant dense<0.0> : {A_type}\n"
+                f"    %result = stablehlo.maximum %A, %zero : {A_type}\n"
+                f"    return %result : {O_type}\n"
+                f"  }}"
+            )
+
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        B_shape = _require_shape(shapes, B_name, sketch.name)
+        B_type = _tensor_type(B_shape, et)
+
+        if A_shape != B_shape:
+            raise EmissionError(
+                f"Elementwise operands must have equal shapes for '{sketch.name}'. "
+                f"Got {A_shape} and {B_shape}."
+            )
+        if O_shape != A_shape:
+            raise EmissionError(
+                f"Elementwise output must match input shape for '{sketch.name}'. "
+                f"Got output {O_shape}, input {A_shape}."
+            )
+
+        if sketch.compute_payload == ComputePayloadType.ADD:
+            op = "stablehlo.add"
+        elif sketch.compute_payload == ComputePayloadType.SUBTRACT:
+            op = "stablehlo.subtract"
+        elif sketch.compute_payload == ComputePayloadType.MULTIPLY:
+            op = "stablehlo.multiply"
+        else:
+            raise EmissionError(
+                f"Unsupported StableHLO elementwise payload for '{sketch.name}': "
+                f"{sketch.compute_payload.value}."
+            )
+
+        return (
+            f"  func.func @{name}(%A: {A_type}, %B: {B_type}) -> {O_type} {{\n"
+            f"    %result = {op} %A, %B : {A_type}\n"
+            f"    return %result : {O_type}\n"
             f"  }}"
         )
 
@@ -1205,22 +1343,33 @@ class StableHLOEmitter:
         self, sketch: OperationSketch, loop: LoopNestInfo, name: str, et: str
     ) -> str:
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [4, 4])
-        B_shape = shapes.get(out, [A_shape[0]])
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _tensor_type(A_shape, et)
         B_type = _tensor_type(B_shape, et)
-        init_type = _tensor_type([], et) if not B_shape else _tensor_type(B_shape, et)
+
+        iv_to_pos = {iv: i for i, iv in enumerate(loop.induction_vars)}
+        reduce_dims = sorted(iv_to_pos[iv] for iv in loop.reduction_vars if iv in iv_to_pos)
+        if not reduce_dims:
+            reduce_dims = [max(0, len(A_shape) - 1)] if A_shape else [0]
+        dims_str = "[" + ", ".join(str(d) for d in reduce_dims) + "]"
+
+        if sketch.compute_payload == ComputePayloadType.ACCUMULATE_MAX or "max" in sketch.name:
+            reducer = "stablehlo.maximum"
+            init_literal = "-3.4028235e38" if et == "f32" else "-1.7976931348623157e308"
+        else:
+            reducer = "stablehlo.add"
+            init_literal = "0.0"
 
         return (
             f"  func.func @{name}(%A: {A_type}) -> {B_type} {{\n"
-            f"    %init = stablehlo.constant dense<0.0> : tensor<{et}>\n"
-            f"    %result = stablehlo.reduce(%A init: %init) applies stablehlo.add\n"
-            f"      across dimensions = [1]\n"
+            f"    %init = stablehlo.constant dense<{init_literal}> : tensor<{et}>\n"
+            f"    %result = stablehlo.reduce(%A init: %init) applies {reducer}\n"
+            f"      across dimensions = {dims_str}\n"
             f"      : ({A_type}, tensor<{et}>) -> {B_type}\n"
             f"    return %result : {B_type}\n"
             f"  }}"

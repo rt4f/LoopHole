@@ -497,6 +497,101 @@ SKETCH_STABLEHLO_DOT = OperationSketch(
     description="C[m,n] = sum_k A[m,k] * B[k,n]  — StableHLO dot_general (matmul)",
 )
 
+SKETCH_STABLEHLO_DOT_MATVEC = OperationSketch(
+    name="stablehlo.dot_general_matvec",
+    dialect="stablehlo",
+    dim_names=["m", "k"],
+    indexing_maps=[
+        "(m, k) -> (m, k)",
+        "(m, k) -> (k)",
+        "(m, k) -> (m)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.REDUCTION],
+    compute_payload=ComputePayloadType.MULTIPLY_ACCUMULATE,
+    num_inputs=2,
+    num_outputs=1,
+    description="y[m] = sum_k A[m,k] * x[k]  — StableHLO dot_general (matvec)",
+)
+
+SKETCH_STABLEHLO_DOT_VECDOT = OperationSketch(
+    name="stablehlo.dot_general_vecdot",
+    dialect="stablehlo",
+    dim_names=["k"],
+    indexing_maps=[
+        "(k) -> (k)",
+        "(k) -> (k)",
+        "() -> ()",
+    ],
+    iterator_types=[IteratorType.REDUCTION],
+    compute_payload=ComputePayloadType.MULTIPLY_ACCUMULATE,
+    num_inputs=2,
+    num_outputs=1,
+    description="c = sum_k A[k] * B[k]  — StableHLO dot_general (vector dot)",
+)
+
+SKETCH_STABLEHLO_TRANSPOSE_2D = OperationSketch(
+    name="stablehlo.transpose",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (j, i)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.PARALLEL],
+    compute_payload=ComputePayloadType.COPY,
+    num_inputs=1,
+    num_outputs=1,
+    description="B[j,i] = A[i,j]  — StableHLO transpose",
+)
+
+SKETCH_STABLEHLO_ELEMENTWISE_ADD = OperationSketch(
+    name="stablehlo.add",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.PARALLEL],
+    compute_payload=ComputePayloadType.ADD,
+    num_inputs=2,
+    num_outputs=1,
+    description="C[i,j] = A[i,j] + B[i,j]  — StableHLO elementwise add",
+)
+
+SKETCH_STABLEHLO_ELEMENTWISE_SUB = OperationSketch(
+    name="stablehlo.subtract",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.PARALLEL],
+    compute_payload=ComputePayloadType.SUBTRACT,
+    num_inputs=2,
+    num_outputs=1,
+    description="C[i,j] = A[i,j] - B[i,j]  — StableHLO elementwise subtract",
+)
+
+SKETCH_STABLEHLO_ELEMENTWISE_MUL = OperationSketch(
+    name="stablehlo.multiply",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i, j)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.PARALLEL],
+    compute_payload=ComputePayloadType.MULTIPLY,
+    num_inputs=2,
+    num_outputs=1,
+    description="C[i,j] = A[i,j] * B[i,j]  — StableHLO elementwise multiply",
+)
+
 SKETCH_STABLEHLO_REDUCE_SUM = OperationSketch(
     name="stablehlo.reduce{add}",
     dialect="stablehlo",
@@ -510,6 +605,36 @@ SKETCH_STABLEHLO_REDUCE_SUM = OperationSketch(
     num_inputs=1,
     num_outputs=1,
     description="B[i] = sum_j A[i,j]  — StableHLO row-wise reduce sum",
+)
+
+SKETCH_STABLEHLO_REDUCE_SUM_COLWISE = OperationSketch(
+    name="stablehlo.reduce{add}_colsum",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (j)",
+    ],
+    iterator_types=[IteratorType.REDUCTION, IteratorType.PARALLEL],
+    compute_payload=ComputePayloadType.ACCUMULATE_ADD,
+    num_inputs=1,
+    num_outputs=1,
+    description="B[j] = sum_i A[i,j]  — StableHLO column-wise reduce sum",
+)
+
+SKETCH_STABLEHLO_REDUCE_MAX = OperationSketch(
+    name="stablehlo.reduce{max}",
+    dialect="stablehlo",
+    dim_names=["i", "j"],
+    indexing_maps=[
+        "(i, j) -> (i, j)",
+        "(i, j) -> (i)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.REDUCTION],
+    compute_payload=ComputePayloadType.ACCUMULATE_MAX,
+    num_inputs=1,
+    num_outputs=1,
+    description="B[i] = max_j A[i,j]  — StableHLO row-wise reduce max",
 )
 
 SKETCH_STABLEHLO_CONV = OperationSketch(
@@ -568,7 +693,15 @@ SKETCH_LIBRARY: List[OperationSketch] = [
     SKETCH_COPY_2D,
     # StableHLO
     SKETCH_STABLEHLO_DOT,
+    SKETCH_STABLEHLO_DOT_MATVEC,
+    SKETCH_STABLEHLO_DOT_VECDOT,
+    SKETCH_STABLEHLO_TRANSPOSE_2D,
+    SKETCH_STABLEHLO_ELEMENTWISE_ADD,
+    SKETCH_STABLEHLO_ELEMENTWISE_SUB,
+    SKETCH_STABLEHLO_ELEMENTWISE_MUL,
     SKETCH_STABLEHLO_REDUCE_SUM,
+    SKETCH_STABLEHLO_REDUCE_SUM_COLWISE,
+    SKETCH_STABLEHLO_REDUCE_MAX,
     SKETCH_STABLEHLO_CONV,
 ]
 

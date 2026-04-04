@@ -14,3 +14,4 @@ This folder tracks Person C implementation work for the three-person execution p
 - [01 - Phase 2 Person C Summary](./01_phase2_person_c_summary.md)
 - [02 - CLI States and Batch JSON Report](./02_cli_states_and_batch_json_report.md)
 - [03 - Weekly Benchmark Report Workflow](./03_weekly_benchmark_report_workflow.md)
+- [04 - Phase 3 StableHLO Coverage Expansion](./04_phase3_stablehlo_coverage_expansion.md)
