@@ -5,6 +5,8 @@ from loophole.lifter import lift, Lifter, LiftResult, LiftResultState
 from loophole.mlir_validator import validate_mlir_artifact
 from loophole.z3_checker import CheckResult, VerificationReport
 from loophole.tests.fixtures import (
+    CONV_2D_1X1_MLIR,
+    CONV_2D_5X5_MLIR,
     CONV_2D_SIMPLE_MLIR,
     CONV_2D_NHWC_MLIR,
     CONV_2D_STRIDED_DILATED_MLIR,
@@ -128,3 +130,17 @@ def test_conv2d_simple_not_refuted_in_phase1_strict_semantics():
         assert result.result_state == LiftResultState.REFUTED
         assert not result.partial_success
         assert result.emitted_mlir is None
+
+
+class TestConv2DEdgeCaseProofs:
+    def test_conv2d_1x1_is_formally_proved(self):
+        result = Lifter(target="linalg", strict_mode=True).lift(CONV_2D_1X1_MLIR)
+        assert result.success, f"Expected proved 1x1 conv2d lift; got: {result.summary()}"
+        assert result.verification is not None
+        assert result.verification.result == CheckResult.EQUIVALENT
+
+    def test_conv2d_5x5_is_formally_proved(self):
+        result = Lifter(target="linalg", strict_mode=True).lift(CONV_2D_5X5_MLIR)
+        assert result.success, f"Expected proved 5x5 conv2d lift; got: {result.summary()}"
+        assert result.verification is not None
+        assert result.verification.result == CheckResult.EQUIVALENT

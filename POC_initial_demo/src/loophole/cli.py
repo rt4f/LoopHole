@@ -384,6 +384,12 @@ def _print_lift_result(
         header_lines.append(
             f"  Z3 result       : {v.result.value} in {v.elapsed_ms:.1f} ms"
         )
+        if v.sympy_z3_disagreement:
+            header_lines.append(f"  SymPy/Z3 diag   : {v.sympy_z3_disagreement}")
+        if v.failed_implication:
+            header_lines.append(f"  Failed side     : {v.failed_implication}")
+        if v.mismatch_summary:
+            header_lines.append(f"  Counterexample  : {v.mismatch_summary}")
     if verbose and result.candidates_tried:
         header_lines.append(f"  Candidates tried: {', '.join(result.candidates_tried)}")
 
@@ -440,8 +446,22 @@ def _print_verification_report(v):
     table.add_row("Result", v.result.value)
     table.add_row("Time (ms)", f"{v.elapsed_ms:.1f}")
     table.add_row("Notes", v.notes or "-")
+    if v.sympy_confidence is not None:
+        table.add_row("SymPy confidence", f"{v.sympy_confidence:.2f}")
+    if v.sympy_z3_disagreement:
+        table.add_row("SymPy/Z3 diagnosis", v.sympy_z3_disagreement)
+    if v.failed_implication:
+        table.add_row("Failed implication", v.failed_implication)
+    if v.mismatch_summary:
+        table.add_row("Mismatch summary", v.mismatch_summary)
     if v.z3_model:
         table.add_row("Counter-example", v.z3_model[:200])
+    if v.counterexample_bindings:
+        preview_items = sorted(v.counterexample_bindings.items())[:8]
+        preview = ", ".join(f"{k}={val}" for k, val in preview_items)
+        if len(v.counterexample_bindings) > len(preview_items):
+            preview += f", ... ({len(v.counterexample_bindings)} total)"
+        table.add_row("Counterexample bindings", preview)
     console.print(table)
 
 
@@ -836,6 +856,10 @@ def batch(
             state_color = _result_state_color(state)
 
             z3_str = result.verification.result.value if result.verification else "-"
+            mismatch_summary = result.verification.mismatch_summary if result.verification else None
+            failed_implication = result.verification.failed_implication if result.verification else None
+            disagreement = result.verification.sympy_z3_disagreement if result.verification else None
+            verification_notes = result.verification.notes if result.verification else None
             sketch_str = result.sketch_name or "-"
             conf_str = f"{result.sympy_confidence:.2f}"
             ms_str = f"{result.total_elapsed_ms:.0f}"
@@ -876,6 +900,11 @@ def batch(
                 "z3": z3_str,
                 "confidence": result.sympy_confidence,
                 "elapsed_ms": result.total_elapsed_ms,
+                "failed_implication": failed_implication,
+                "sympy_z3_disagreement": disagreement,
+                "mismatch_summary": mismatch_summary,
+                "verification_notes": verification_notes,
+                "counterexample_bindings": result.verification.counterexample_bindings if result.verification else {},
                 "success": result.success,
                 "error": result.error,
                 "emitted_file": emitted_path,

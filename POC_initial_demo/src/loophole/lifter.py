@@ -158,6 +158,7 @@ class Lifter:
         self.top_k = top_k
         self.strict_mode = strict_mode
         self.verbose = verbose
+        self.disagreement_confidence_threshold = 0.8
 
         self._extractor = AffineExtractor()
         self._tracer = SympyTracer()
@@ -340,35 +341,64 @@ class Lifter:
 
         # Special fast path: convolution recognizer
         conv_name = self._tracer.recognise_convolution(loop)
+        trace: Optional[TraceResult] = None
+        trace_error: Optional[Exception] = None
+        try:
+            trace = self._tracer.trace(loop)
+        except Exception as exc:
+            trace_error = exc
+            if self.verbose:
+                print(f"[SymPy] Trace failed: {exc}")
 
         # Structural pre-filter
-        candidates: List[Tuple[OperationSketch, float]] = []
+        ranked_candidates: List[Tuple[bool, float, OperationSketch]] = []
         for sketch in library:
             if not structural_match(loop, sketch):
                 continue
 
-            # Boost if convolution recognizer agrees
-            boost = 0.3 if (conv_name and sketch.name == conv_name) else 0.0
-
             # SymPy confidence scoring
-            try:
-                trace = self._tracer.trace(loop)
+            if trace is not None:
                 conf = self._tracer._sketch_confidence(trace, loop, sketch)
-            except Exception:
-                conf = 0.3  # fallback confidence
-            conf = min(1.0, conf + boost)
+            else:
+                conf = 0.0
 
-            candidates.append((sketch, conf))
+            conv_match = bool(conv_name and sketch.name == conv_name)
+            ranked_candidates.append((conv_match, conf, sketch))
 
-        # Sort by confidence descending
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        # Prefer recognizer-aligned candidate when confidence ties.
+        ranked_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        candidates = [(sketch, conf) for _, conf, sketch in ranked_candidates]
 
         if self.verbose:
             print(f"[Lifter] {len(candidates)} structural candidates:")
             for sk, c in candidates[:5]:
                 print(f"         {sk.name}: {c:.3f}")
+            if trace_error is not None:
+                print("         SymPy trace unavailable; candidates scored at 0.0")
 
         return candidates[: self.top_k * 2]  # take more than top_k for Z3 to try
+
+    def _annotate_disagreement(self, report: VerificationReport, confidence: float) -> None:
+        report.sympy_confidence = confidence
+
+        if report.result == CheckResult.EQUIVALENT:
+            report.sympy_z3_disagreement = None
+            return
+
+        if confidence < self.disagreement_confidence_threshold:
+            report.sympy_z3_disagreement = None
+            return
+
+        if report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
+            report.sympy_z3_disagreement = "HIGH_CONFIDENCE_UNPROVED"
+        elif report.result == CheckResult.NOT_EQUIVALENT:
+            report.sympy_z3_disagreement = "HIGH_CONFIDENCE_REFUTED"
+        else:
+            report.sympy_z3_disagreement = None
+
+        if report.sympy_z3_disagreement:
+            marker = f" [sympy_z3_disagreement={report.sympy_z3_disagreement}]"
+            report.notes = (report.notes + marker).strip()
 
     # ------------------------------------------------------------------
     # Stage 3: Z3 verification
@@ -393,6 +423,7 @@ class Lifter:
                 print(f"[Z3] Checking {sketch.name} (sympy conf={conf:.3f})...")
 
             report = self._z3.check(loop, sketch)
+            self._annotate_disagreement(report, conf)
 
             if self.verbose:
                 print(f"     -> {report.result.value} in {report.elapsed_ms:.1f}ms")

@@ -171,6 +171,46 @@ func.func @conv2d(%I: memref<6x6xf32>, %K: memref<3x3xf32>, %O: memref<4x4xf32>)
 }
 """
 
+CONV_2D_1X1_MLIR = """\
+func.func @conv2d_1x1(%I: memref<4x4xf32>, %K: memref<1x1xf32>, %O: memref<4x4xf32>) {
+  affine.for %oh = 0 to 4 {
+    affine.for %ow = 0 to 4 {
+      affine.for %kh = 0 to 1 {
+        affine.for %kw = 0 to 1 {
+          %i_val = affine.load %I[%oh + %kh, %ow + %kw] : memref<4x4xf32>
+          %k_val = affine.load %K[%kh, %kw] : memref<1x1xf32>
+          %o_val = affine.load %O[%oh, %ow] : memref<4x4xf32>
+          %mul = arith.mulf %i_val, %k_val : f32
+          %add = arith.addf %o_val, %mul : f32
+          affine.store %add, %O[%oh, %ow] : memref<4x4xf32>
+        }
+      }
+    }
+  }
+  return
+}
+"""
+
+CONV_2D_5X5_MLIR = """\
+func.func @conv2d_5x5(%I: memref<8x8xf32>, %K: memref<5x5xf32>, %O: memref<4x4xf32>) {
+  affine.for %oh = 0 to 4 {
+    affine.for %ow = 0 to 4 {
+      affine.for %kh = 0 to 5 {
+        affine.for %kw = 0 to 5 {
+          %i_val = affine.load %I[%oh + %kh, %ow + %kw] : memref<8x8xf32>
+          %k_val = affine.load %K[%kh, %kw] : memref<5x5xf32>
+          %o_val = affine.load %O[%oh, %ow] : memref<4x4xf32>
+          %mul = arith.mulf %i_val, %k_val : f32
+          %add = arith.addf %o_val, %mul : f32
+          affine.store %add, %O[%oh, %ow] : memref<4x4xf32>
+        }
+      }
+    }
+  }
+  return
+}
+"""
+
 # 2-D convolution with non-unit stride/dilation per axis:
 # h: I[2*oh + 3*kh], w: I[ow + 2*kw]
 CONV_2D_STRIDED_DILATED_MLIR = """\
@@ -241,6 +281,34 @@ func.func @dot(%A: memref<8xf32>, %B: memref<8xf32>, %c: memref<1xf32>) {
 }
 """
 
+DOT_PRODUCT_16_MLIR = """\
+func.func @dot16(%A: memref<16xf32>, %B: memref<16xf32>, %c: memref<1xf32>) {
+  affine.for %k = 0 to 16 {
+    %a = affine.load %A[%k] : memref<16xf32>
+    %b = affine.load %B[%k] : memref<16xf32>
+    %c_val = affine.load %c[0] : memref<1xf32>
+    %mul = arith.mulf %a, %b : f32
+    %add = arith.addf %c_val, %mul : f32
+    affine.store %add, %c[0] : memref<1xf32>
+  }
+  return
+}
+"""
+
+DOT_PRODUCT_SYMBOLIC_N_MLIR = """\
+func.func @dot_symbolic_n(%A: memref<16xf32>, %B: memref<16xf32>, %c: memref<1xf32>, %N: index) {
+  affine.for %k = 0 to %N {
+    %a = affine.load %A[%k] : memref<16xf32>
+    %b = affine.load %B[%k] : memref<16xf32>
+    %c_val = affine.load %c[0] : memref<1xf32>
+    %mul = arith.mulf %a, %b : f32
+    %add = arith.addf %c_val, %mul : f32
+    affine.store %add, %c[0] : memref<1xf32>
+  }
+  return
+}
+"""
+
 # ---------------------------------------------------------------------------
 # Matrix-Vector Multiply: y[m] += A[m,k] * x[k]
 # ---------------------------------------------------------------------------
@@ -254,7 +322,39 @@ func.func @matvec(%A: memref<4x4xf32>, %x: memref<4xf32>, %y: memref<4xf32>) {
       %ym = affine.load %y[%m] : memref<4xf32>
       %mul = arith.mulf %a, %xk : f32
       %add = arith.addf %ym, %mul : f32
-      affine.store %add, %y[%m] : memref<4x4xf32>
+      affine.store %add, %y[%m] : memref<4xf32>
+    }
+  }
+  return
+}
+"""
+
+MATVEC_TALL_MLIR = """\
+func.func @matvec_tall(%A: memref<8x3xf32>, %x: memref<3xf32>, %y: memref<8xf32>) {
+  affine.for %m = 0 to 8 {
+    affine.for %k = 0 to 3 {
+      %a = affine.load %A[%m, %k] : memref<8x3xf32>
+      %xk = affine.load %x[%k] : memref<3xf32>
+      %ym = affine.load %y[%m] : memref<8xf32>
+      %mul = arith.mulf %a, %xk : f32
+      %add = arith.addf %ym, %mul : f32
+      affine.store %add, %y[%m] : memref<8xf32>
+    }
+  }
+  return
+}
+"""
+
+MATVEC_WIDE_MLIR = """\
+func.func @matvec_wide(%A: memref<3x8xf32>, %x: memref<8xf32>, %y: memref<3xf32>) {
+  affine.for %m = 0 to 3 {
+    affine.for %k = 0 to 8 {
+      %a = affine.load %A[%m, %k] : memref<3x8xf32>
+      %xk = affine.load %x[%k] : memref<8xf32>
+      %ym = affine.load %y[%m] : memref<3xf32>
+      %mul = arith.mulf %a, %xk : f32
+      %add = arith.addf %ym, %mul : f32
+      affine.store %add, %y[%m] : memref<3xf32>
     }
   }
   return
@@ -411,6 +511,11 @@ DEMO_FIXTURES = {
 ALL_FIXTURES = {
     **DEMO_FIXTURES,
     "matmul_128x128":         MATMUL_128_MLIR,
+  "dot_product_16":         DOT_PRODUCT_16_MLIR,
+  "matvec_tall":            MATVEC_TALL_MLIR,
+  "matvec_wide":            MATVEC_WIDE_MLIR,
+  "conv2d_1x1":             CONV_2D_1X1_MLIR,
+  "conv2d_5x5":             CONV_2D_5X5_MLIR,
     "transpose_nonsquare":    TRANSPOSE_NONSQUARE_MLIR,
   "transpose_3d_perm_120":  TRANSPOSE_3D_PERM_120_MLIR,
   "transpose_3d_perm_201":  TRANSPOSE_3D_PERM_201_MLIR,

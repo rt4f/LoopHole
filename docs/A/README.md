@@ -12,6 +12,12 @@ This folder contains documentation for Person A work in the three-person paralle
 | [02_a01_a05_semantics_spec.md](02_a01_a05_semantics_spec.md) | Trust-state and strict-mode semantics specification | Done |
 | [03_validation_and_handoff.md](03_validation_and_handoff.md) | Validation evidence and commit scope | Done |
 
+### Phase 2: Harden Core Engine
+
+| Doc | Task | Status |
+|---|---|---|
+| [04_phase2_person_a_summary.md](04_phase2_person_a_summary.md) | A-06 through A-10 implementation, diagnostics, and validation | Done |
+
 ## Scope Clarification
 
 Person A scope for Phase 1:

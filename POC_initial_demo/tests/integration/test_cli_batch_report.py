@@ -19,6 +19,10 @@ def _make_lift_result(
     *,
     emitted_mlir: bool,
     error: str | None = None,
+    failed_implication: str | None = None,
+    disagreement: str | None = None,
+    mismatch_summary: str | None = None,
+    counterexample_bindings: dict[str, str] | None = None,
 ) -> LiftResult:
     sketch = SimpleNamespace(name="linalg.dummy")
     verification = VerificationReport(
@@ -26,6 +30,10 @@ def _make_lift_result(
         sketch_name=sketch.name,
         elapsed_ms=1.0,
         notes="test",
+        failed_implication=failed_implication,
+        sympy_z3_disagreement=disagreement,
+        mismatch_summary=mismatch_summary,
+        counterexample_bindings=counterexample_bindings or {},
     )
     return LiftResult(
         func_name="dummy",
@@ -113,3 +121,43 @@ def test_batch_report_defaults_to_output_dir(monkeypatch, tmp_path) -> None:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["summary"]["total_files"] == 1
     assert payload["summary"]["proved"] == 1
+
+
+def test_batch_report_includes_verification_diagnostics(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+
+    refuted = _make_lift_result(
+        CheckResult.NOT_EQUIVALENT,
+        emitted_mlir=False,
+        error="refuted",
+        failed_implication="source_to_sketch",
+        disagreement="HIGH_CONFIDENCE_REFUTED",
+        mismatch_summary="i=0, j=1",
+        counterexample_bindings={"i": "0", "j": "1"},
+    )
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return refuted
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    report_path = tmp_path / "diag_report.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--report",
+            "--report-path",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    row = payload["results"][0]
+    assert row["failed_implication"] == "source_to_sketch"
+    assert row["sympy_z3_disagreement"] == "HIGH_CONFIDENCE_REFUTED"
+    assert row["mismatch_summary"] == "i=0, j=1"
+    assert row["counterexample_bindings"] == {"i": "0", "j": "1"}

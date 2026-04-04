@@ -54,19 +54,21 @@ def _render_markdown(payload: Dict) -> str:
         "",
         "## Per-Kernel Results",
         "",
-        "| Kernel | Sketch | State | Z3 | Conf | ms |",
-        "|---|---|---|---|---:|---:|",
+        "| Kernel | Sketch | State | Z3 | Conf | ms | Diag |",
+        "|---|---|---|---|---:|---:|---|",
     ]
 
     for row in payload["results"]:
+        diag = row.get("sympy_z3_disagreement") or row.get("failed_implication") or "-"
         lines.append(
-            "| {kernel} | {sketch} | {state} | {z3} | {conf:.2f} | {ms:.1f} |".format(
+            "| {kernel} | {sketch} | {state} | {z3} | {conf:.2f} | {ms:.1f} | {diag} |".format(
                 kernel=row["file_name"],
                 sketch=row["sketch"] or "-",
                 state=row["state"],
                 z3=row["z3"],
                 conf=row["confidence"],
                 ms=row["elapsed_ms"],
+                diag=diag,
             )
         )
 
@@ -95,6 +97,9 @@ def generate_report(fixtures_dir: Path, target: str, z3_timeout_ms: int, label: 
         state_counts[state] += 1
 
         z3_result = result.verification.result.value if result.verification else "-"
+        failed_implication = result.verification.failed_implication if result.verification else None
+        disagreement = result.verification.sympy_z3_disagreement if result.verification else None
+        mismatch_summary = result.verification.mismatch_summary if result.verification else None
         rows.append(
             {
                 "file": str(mlir_file),
@@ -106,6 +111,10 @@ def generate_report(fixtures_dir: Path, target: str, z3_timeout_ms: int, label: 
                 "z3": z3_result,
                 "confidence": result.sympy_confidence,
                 "elapsed_ms": result.total_elapsed_ms,
+                "failed_implication": failed_implication,
+                "sympy_z3_disagreement": disagreement,
+                "mismatch_summary": mismatch_summary,
+                "counterexample_bindings": result.verification.counterexample_bindings if result.verification else {},
                 "error": result.error,
             }
         )

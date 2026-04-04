@@ -26,7 +26,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from z3 import (
     And, ArithRef, ArrayRef, ArraySort, BoolRef, ExprRef, ForAll, Function,
@@ -61,6 +61,11 @@ class VerificationReport:
     sketch_name: str
     elapsed_ms: float
     z3_model: Optional[str] = None      # counter-example model (if NOT_EQUIVALENT)
+    counterexample_bindings: Dict[str, str] = field(default_factory=dict)
+    failed_implication: Optional[str] = None
+    mismatch_summary: Optional[str] = None
+    sympy_confidence: Optional[float] = None
+    sympy_z3_disagreement: Optional[str] = None
     notes: str = ""
 
     @property
@@ -92,6 +97,134 @@ def _z3_int(val: Union[int, str]) -> ArithRef:
         return Int(val)
 
 
+def _sanitize_symbol_name(raw: str) -> str:
+    """Create a Z3-friendly symbol name from parsed affine tokens."""
+    name = raw.strip().lstrip('%')
+    if not name:
+        return "sym"
+
+    cleaned = ''.join(ch if (ch.isalnum() or ch == '_') else '_' for ch in name)
+    cleaned = cleaned.strip('_')
+    if not cleaned:
+        cleaned = "sym"
+    if cleaned[0].isdigit():
+        cleaned = f"s_{cleaned}"
+    return cleaned
+
+
+def _tokenize_affine_expr(expr: str) -> List[str]:
+    """Tokenize a simple affine arithmetic expression."""
+    tokens: List[str] = []
+    i = 0
+    n = len(expr)
+
+    while i < n:
+        ch = expr[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in '+-*()':
+            tokens.append(ch)
+            i += 1
+            continue
+        if ch.isdigit():
+            j = i
+            while j < n and expr[j].isdigit():
+                j += 1
+            tokens.append(expr[i:j])
+            i = j
+            continue
+        if ch.isalpha() or ch in {'_', '%'}:
+            j = i
+            while j < n and (expr[j].isalnum() or expr[j] in {'_', '%'}):
+                j += 1
+            tokens.append(expr[i:j])
+            i = j
+            continue
+        raise ValueError(f"Unsupported character in affine expression: {ch!r}")
+
+    return tokens
+
+
+class _AffineExprParser:
+    """Recursive-descent parser for affine-like expressions used by bounds/maps."""
+
+    def __init__(self, tokens: List[str], symbol_lookup: Callable[[str], ArithRef]):
+        self.tokens = tokens
+        self.pos = 0
+        self.symbol_lookup = symbol_lookup
+
+    def _peek(self) -> Optional[str]:
+        if self.pos >= len(self.tokens):
+            return None
+        return self.tokens[self.pos]
+
+    def _consume(self, expected: Optional[str] = None) -> str:
+        tok = self._peek()
+        if tok is None:
+            raise ValueError("Unexpected end of expression")
+        if expected is not None and tok != expected:
+            raise ValueError(f"Expected '{expected}', got '{tok}'")
+        self.pos += 1
+        return tok
+
+    def parse(self) -> ArithRef:
+        value = self._parse_expr()
+        if self._peek() is not None:
+            raise ValueError(f"Unexpected trailing token: {self._peek()}")
+        return value
+
+    def _parse_expr(self) -> ArithRef:
+        value = self._parse_term()
+        while True:
+            tok = self._peek()
+            if tok == '+':
+                self._consume('+')
+                value = value + self._parse_term()
+            elif tok == '-':
+                self._consume('-')
+                value = value - self._parse_term()
+            else:
+                return value
+
+    def _parse_term(self) -> ArithRef:
+        value = self._parse_factor()
+        while self._peek() == '*':
+            self._consume('*')
+            value = value * self._parse_factor()
+        return value
+
+    def _parse_factor(self) -> ArithRef:
+        tok = self._peek()
+        if tok is None:
+            raise ValueError("Unexpected end while parsing factor")
+
+        if tok == '-':
+            self._consume('-')
+            return IntVal(-1) * self._parse_factor()
+        if tok == '(':
+            self._consume('(')
+            value = self._parse_expr()
+            self._consume(')')
+            return value
+
+        token = self._consume()
+        if token.isdigit():
+            return IntVal(int(token))
+        return self.symbol_lookup(token)
+
+
+def _eval_affine_expr(
+    expr: str,
+    symbol_lookup: Callable[[str], ArithRef],
+) -> ArithRef:
+    """Parse and evaluate affine arithmetic into a Z3 arithmetic expression."""
+    tokens = _tokenize_affine_expr(expr)
+    if not tokens:
+        return IntVal(0)
+    return _AffineExprParser(tokens, symbol_lookup).parse()
+
+
 # ---------------------------------------------------------------------------
 # Index expression evaluator
 # ---------------------------------------------------------------------------
@@ -106,51 +239,23 @@ def _eval_index_expr(expr: str, iv_vars: Dict[str, ArithRef]) -> ArithRef:
     Multiplication by constant (e.g. '2*i') is also handled.
     """
     expr = expr.strip()
+    if not expr:
+        return IntVal(0)
 
-    # Replace IV names longest-first to avoid partial replacements
-    sorted_ivs = sorted(iv_vars.keys(), key=len, reverse=True)
+    def lookup(token: str) -> ArithRef:
+        key = token.strip()
+        if key in iv_vars:
+            return iv_vars[key]
+        key = key.lstrip('%')
+        if key in iv_vars:
+            return iv_vars[key]
+        return Int(_sanitize_symbol_name(key))
 
-    # Tokenise: split on + and -, keeping the sign
-    # But first handle subtraction by replacing ' - ' with ' + -'
-    normalised = expr.replace(' - ', ' + -').replace('-', ' -')
-
-    parts = [p.strip() for p in normalised.split('+') if p.strip()]
-    result: Optional[ArithRef] = None
-
-    for part in parts:
-        part = part.strip()
-        negate = False
-        if part.startswith('-'):
-            negate = True
-            part = part[1:].strip()
-
-        # Try multiplication: e.g. '2*i' or '2 * i'
-        if '*' in part:
-            factors = [f.strip() for f in part.split('*')]
-            term: ArithRef = IntVal(1)
-            for f in factors:
-                f = f.strip()
-                if f in iv_vars:
-                    term = term * iv_vars[f]
-                else:
-                    try:
-                        term = term * IntVal(int(f))
-                    except ValueError:
-                        term = term * Int(f)
-        elif part in iv_vars:
-            term = iv_vars[part]
-        else:
-            try:
-                term = IntVal(int(part))
-            except ValueError:
-                term = Int(part)   # treat unknown as a fresh variable
-
-        if negate:
-            term = IntVal(-1) * term
-
-        result = term if result is None else result + term
-
-    return result if result is not None else IntVal(0)
+    try:
+        return _eval_affine_expr(expr, lookup)
+    except Exception:
+        # Keep best-effort behavior for unusual affine tokens we do not parse yet.
+        return Int(_sanitize_symbol_name(expr))
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +339,102 @@ class Z3EquivalenceChecker:
     ):
         self.timeout_ms = timeout_ms
         self.unroll_threshold = unroll_threshold  # max reduction dim size to unroll
+        self._bound_symbols: Dict[str, ArithRef] = {}
+
+    def _bound_expr(self, value: Union[int, str]) -> ArithRef:
+        """Convert a loop bound into a Z3 arithmetic expression."""
+        if isinstance(value, int):
+            return IntVal(value)
+
+        text = str(value).strip()
+        if not text:
+            return IntVal(0)
+
+        try:
+            return IntVal(int(text))
+        except ValueError:
+            pass
+
+        def lookup(token: str) -> ArithRef:
+            key = token.strip().lstrip('%')
+            if key not in self._bound_symbols:
+                self._bound_symbols[key] = Int(_sanitize_symbol_name(key))
+            return self._bound_symbols[key]
+
+        try:
+            return _eval_affine_expr(text, lookup)
+        except Exception:
+            # Fallback to a stable symbolic variable if parsing fails.
+            return lookup(text)
+
+    def _bound_as_int(self, value: Union[int, str]) -> Optional[int]:
+        """Return a concrete integer bound when available, otherwise None."""
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _extract_model_details(self, solver: Solver) -> Tuple[Optional[str], Dict[str, str]]:
+        """Extract a stable string and key-value bindings from the current Z3 model."""
+        try:
+            model = solver.model()
+        except Exception:
+            return None, {}
+
+        model_str = str(model)
+        bindings: Dict[str, str] = {}
+        try:
+            for decl in model.decls():
+                name = decl.name()
+                try:
+                    bindings[name] = str(model[decl])
+                except Exception:
+                    bindings[name] = "<unavailable>"
+        except Exception:
+            return model_str, {}
+
+        return model_str, bindings
+
+    def _format_mismatch_summary(self, bindings: Dict[str, str]) -> Optional[str]:
+        if not bindings:
+            return None
+        keys = sorted(bindings.keys())[:6]
+        summary = ", ".join(f"{k}={bindings[k]}" for k in keys)
+        if len(bindings) > len(keys):
+            summary += f", ... ({len(bindings)} bindings)"
+        return summary
+
+    def _failed_implication_report(
+        self,
+        sketch_name: str,
+        implication_name: str,
+        solver_result: Any,
+        solver: Solver,
+    ) -> VerificationReport:
+        model_str: Optional[str] = None
+        model_bindings: Dict[str, str] = {}
+        if solver_result == sat:
+            model_str, model_bindings = self._extract_model_details(solver)
+
+        if solver_result == sat:
+            result = CheckResult.NOT_EQUIVALENT
+        elif solver_result == unknown:
+            result = CheckResult.TIMEOUT
+        else:
+            result = CheckResult.UNKNOWN
+
+        return VerificationReport(
+            result=result,
+            sketch_name=sketch_name,
+            elapsed_ms=0.0,
+            z3_model=model_str,
+            counterexample_bindings=model_bindings,
+            failed_implication=implication_name,
+            mismatch_summary=self._format_mismatch_summary(model_bindings),
+            notes=f"{implication_name} implication failed.",
+        )
 
     def check(
         self,
@@ -245,6 +446,7 @@ class Z3EquivalenceChecker:
         Returns a VerificationReport with the result and timing.
         """
         t0 = time.perf_counter()
+        self._bound_symbols = {}
 
         # Fast structural pre-filter
         if not structural_match(loop, sketch):
@@ -303,6 +505,10 @@ class Z3EquivalenceChecker:
 
         ivs = loop.induction_vars  # short names: ['i', 'j', 'k']
         bounds = loop.bounds       # {'i': (0, M), 'j': (0, N), 'k': (0, K)}
+        has_symbolic_bounds = any(
+            self._bound_as_int(lo) is None or self._bound_as_int(hi) is None
+            for lo, hi in bounds.values()
+        )
 
         # Create Z3 real-valued tensor functions
         tensor_funcs: Dict[str, Any] = {}
@@ -323,46 +529,41 @@ class Z3EquivalenceChecker:
         sketch_assertions = self._build_sketch_assertions(
             loop, sketch, iv_z3, tensor_funcs, bounds
         )
+        domain_assumptions = (
+            self._build_symbolic_shape_assumptions(loop, bounds)
+            if has_symbolic_bounds
+            else []
+        )
 
         # Bi-directional equivalence:
         # Check ¬(source → sketch): should be UNSAT
         check1 = self._check_implication(
-            solver, source_assertions, sketch_assertions
+            solver,
+            domain_assumptions + source_assertions,
+            domain_assumptions + sketch_assertions,
         )
         if check1 != unsat:
-            model_str = None
-            if check1 == sat:
-                try:
-                    model_str = str(solver.model())
-                except Exception:
-                    pass
-            return VerificationReport(
-                result=CheckResult.NOT_EQUIVALENT if check1 == sat else CheckResult.TIMEOUT if check1 == unknown else CheckResult.UNKNOWN,
+            return self._failed_implication_report(
                 sketch_name=sketch.name,
-                elapsed_ms=0.0,
-                z3_model=model_str,
-                notes="Source → sketch implication failed.",
+                implication_name="source_to_sketch",
+                solver_result=check1,
+                solver=solver,
             )
 
         # Check ¬(sketch → source): should also be UNSAT
         solver.reset()
         solver.set("timeout", self.timeout_ms)
         check2 = self._check_implication(
-            solver, sketch_assertions, source_assertions
+            solver,
+            domain_assumptions + sketch_assertions,
+            domain_assumptions + source_assertions,
         )
         if check2 != unsat:
-            model_str = None
-            if check2 == sat:
-                try:
-                    model_str = str(solver.model())
-                except Exception:
-                    pass
-            return VerificationReport(
-                result=CheckResult.NOT_EQUIVALENT if check2 == sat else CheckResult.TIMEOUT if check2 == unknown else CheckResult.UNKNOWN,
+            return self._failed_implication_report(
                 sketch_name=sketch.name,
-                elapsed_ms=0.0,
-                z3_model=model_str,
-                notes="Sketch → source implication failed.",
+                implication_name="sketch_to_source",
+                solver_result=check2,
+                solver=solver,
             )
 
         return VerificationReport(
@@ -383,6 +584,100 @@ class Z3EquivalenceChecker:
         c = And(*conclusion) if len(conclusion) > 1 else (conclusion[0] if conclusion else BoolVal(True))
         solver.add(Not(Implies(h, c)))
         return solver.check()
+
+    def _parse_simple_iv_offset(self, expr: str) -> Optional[Tuple[str, int]]:
+        """
+        Parse a restricted affine index form to iv + offset.
+
+        Supported shapes:
+          iv
+          iv + c
+          iv - c
+          c + iv
+        """
+        try:
+            tokens = _tokenize_affine_expr(expr)
+        except Exception:
+            return None
+
+        def as_var(tok: str) -> Optional[str]:
+            if tok.isdigit() or tok in {'+', '-', '*', '(', ')'}:
+                return None
+            return tok.lstrip('%')
+
+        if len(tokens) == 1:
+            var = as_var(tokens[0])
+            if var:
+                return var, 0
+            return None
+
+        if len(tokens) == 3 and tokens[1] in {'+', '-'}:
+            left_var = as_var(tokens[0])
+            right_var = as_var(tokens[2])
+            left_num = int(tokens[0]) if tokens[0].isdigit() else None
+            right_num = int(tokens[2]) if tokens[2].isdigit() else None
+
+            if left_var is not None and right_num is not None:
+                offset = right_num if tokens[1] == '+' else -right_num
+                return left_var, offset
+
+            if left_num is not None and right_var is not None and tokens[1] == '+':
+                return right_var, left_num
+
+        return None
+
+    def _build_symbolic_shape_assumptions(
+        self,
+        loop: LoopNestInfo,
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+    ) -> List[BoolRef]:
+        """
+        Add conservative domain assumptions for symbolic bounds.
+
+        These assumptions reflect static tensor extents for direct iv (+/- const)
+        access forms, which helps the solver avoid exploring impossible domains.
+        """
+        assumptions: List[BoolRef] = []
+        seen: set[str] = set()
+
+        for access in list(loop.reads) + list(loop.writes):
+            shape = loop.tensor_shapes.get(access.tensor_name, access.shape)
+            if not shape:
+                continue
+
+            for dim_idx, idx_expr in enumerate(access.index_exprs):
+                if dim_idx >= len(shape):
+                    continue
+                extent = shape[dim_idx]
+                if extent <= 0:
+                    continue
+
+                parsed = self._parse_simple_iv_offset(idx_expr)
+                if parsed is None:
+                    continue
+
+                iv_name, offset = parsed
+                if iv_name not in bounds:
+                    continue
+
+                lo, hi = bounds[iv_name]
+                lo_expr = self._bound_expr(lo)
+                hi_expr = self._bound_expr(hi)
+
+                lo_constraint = lo_expr + IntVal(offset) >= IntVal(0)
+                hi_constraint = hi_expr + IntVal(offset) <= IntVal(extent)
+
+                lo_key = f"{iv_name}:{offset}:lo"
+                hi_key = f"{iv_name}:{offset}:hi:{extent}"
+
+                if lo_key not in seen:
+                    assumptions.append(lo_constraint)
+                    seen.add(lo_key)
+                if hi_key not in seen:
+                    assumptions.append(hi_constraint)
+                    seen.add(hi_key)
+
+        return assumptions
 
     # ------------------------------------------------------------------
     # Build source program assertions
@@ -410,7 +705,7 @@ class Z3EquivalenceChecker:
             for iv in iv_subset:
                 lo, hi = bounds.get(iv, (0, 1))
                 v = iv_z3[iv]
-                parts.append(And(IntVal(int(lo)) <= v, v < IntVal(int(hi))))
+                parts.append(And(self._bound_expr(lo) <= v, v < self._bound_expr(hi)))
             return And(*parts) if parts else BoolVal(True)
 
         output_write = loop.writes[0] if loop.writes else None
@@ -537,15 +832,120 @@ class Z3EquivalenceChecker:
         red_ivs = loop.reduction_vars
         # Check if all reduction bounds are concrete and small
         can_unroll = all(
-            isinstance(bounds.get(iv, (0, 0))[1], int)
-            and (bounds.get(iv, (0, 0))[1] - bounds.get(iv, (0, 0))[0]) <= self.unroll_threshold
+            self._bound_as_int(bounds.get(iv, (0, 0))[0]) is not None
+            and self._bound_as_int(bounds.get(iv, (0, 0))[1]) is not None
+            and (
+                self._bound_as_int(bounds.get(iv, (0, 0))[1])
+                - self._bound_as_int(bounds.get(iv, (0, 0))[0])
+            )
+            <= self.unroll_threshold
             for iv in red_ivs
         )
 
         if can_unroll:
             return self._unrolled_reduction(loop, iv_z3, tensor_funcs, bounds)
+
+        symbolic_limit = self._symbolic_reduction_upper_bound(loop, bounds)
+        if symbolic_limit is not None:
+            return self._guarded_symbolic_unroll_reduction(
+                loop,
+                iv_z3,
+                tensor_funcs,
+                bounds,
+                symbolic_limit,
+            )
+
         else:
             return self._recfunc_reduction(loop, iv_z3, tensor_funcs, bounds)
+
+    def _symbolic_reduction_upper_bound(
+        self,
+        loop: LoopNestInfo,
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+    ) -> Optional[int]:
+        """
+        Infer a finite symbolic reduction upper bound from static tensor extents.
+
+        This is used to build guarded unrolled sums for symbolic bounds, which is
+        typically more solver-friendly than recursive definitions.
+        """
+        if len(loop.reduction_vars) != 1:
+            return None
+
+        red_iv = loop.reduction_vars[0]
+        lo_raw, hi_raw = bounds.get(red_iv, (0, 1))
+        lo = self._bound_as_int(lo_raw)
+        if lo is None:
+            return None
+
+        if self._bound_as_int(hi_raw) is not None:
+            return None
+
+        upper: Optional[int] = None
+        for access in list(loop.reads) + list(loop.writes):
+            shape = loop.tensor_shapes.get(access.tensor_name, access.shape)
+            if not shape:
+                continue
+
+            for dim_idx, idx_expr in enumerate(access.index_exprs):
+                if dim_idx >= len(shape):
+                    continue
+                extent = shape[dim_idx]
+                if extent <= 0:
+                    continue
+
+                parsed = self._parse_simple_iv_offset(idx_expr)
+                if parsed is None:
+                    continue
+
+                iv_name, offset = parsed
+                if iv_name != red_iv:
+                    continue
+
+                candidate = extent - offset
+                upper = candidate if upper is None else min(upper, candidate)
+
+        if upper is None:
+            return None
+
+        if upper - lo > self.unroll_threshold:
+            return None
+        return upper
+
+    def _guarded_symbolic_unroll_reduction(
+        self,
+        loop: LoopNestInfo,
+        iv_z3: Dict[str, ArithRef],
+        tensor_funcs: Dict[str, Any],
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+        upper: int,
+    ) -> ArithRef:
+        """Build reduction as a finite guarded sum over a symbolic upper bound."""
+        red_iv = loop.reduction_vars[0]
+        lo_raw, hi_raw = bounds.get(red_iv, (0, 1))
+        lo = self._bound_as_int(lo_raw)
+        if lo is None:
+            raise ValueError("Guarded symbolic unroll requires concrete lower bound.")
+
+        hi_expr = self._bound_expr(hi_raw)
+        cp = self._infer_compute_payload(loop)
+        total: ArithRef = RealVal(-1e30) if cp == ComputePayloadType.ACCUMULATE_MAX else RealVal(0)
+
+        for k in range(lo, upper):
+            local_iv = dict(iv_z3)
+            local_iv[red_iv] = IntVal(k)
+            term = self._body_term_at(loop, local_iv, tensor_funcs, cp)
+            active = IntVal(k) < hi_expr
+
+            if cp in (ComputePayloadType.MULTIPLY_ACCUMULATE, ComputePayloadType.ACCUMULATE_ADD):
+                total = If(active, total + term, total)
+            elif cp == ComputePayloadType.ACCUMULATE_MAX:
+                candidate = If(term > total, term, total)
+                total = If(active, candidate, total)
+            else:
+                total = If(active, total + term, total)
+
+        return total
 
     def _unrolled_reduction(
         self,
@@ -651,9 +1051,14 @@ class Z3EquivalenceChecker:
         Defines: acc(par..., k) = acc(par..., k-1) + A[par..., k-1] * B[..., k-1]
                  acc(par..., 0) = 0
         """
-        red_iv = loop.reduction_vars[0]   # support single reduction IV for now
+        if len(loop.reduction_vars) != 1:
+            raise ValueError(
+                "Symbolic/large reduction path requires a single reduction dimension; "
+                "use concrete bounds for multi-reduction kernels."
+            )
+
+        red_iv = loop.reduction_vars[0]
         lo, hi = bounds.get(red_iv, (0, 1))
-        k_var = iv_z3[red_iv]
 
         cp = self._infer_compute_payload(loop)
         reads_no_output = [r for r in loop.reads if r.tensor_name != loop.output_tensor]
@@ -689,13 +1094,13 @@ class Z3EquivalenceChecker:
             acc_func,
             par_vars_z3 + [k_z3],
             If(
-                k_z3 == IntVal(int(lo)),
+                k_z3 == self._bound_expr(lo),
                 RealVal(0),
                 acc_func(*par_vars_z3, k_z3 - IntVal(1)) + body_term,
             ),
         )
 
-        return acc_func(*par_vars_z3, IntVal(int(hi)))
+        return acc_func(*par_vars_z3, self._bound_expr(hi))
 
     # ------------------------------------------------------------------
     # Build sketch assertions
@@ -752,6 +1157,10 @@ class Z3EquivalenceChecker:
         out_map_str = sketch.indexing_maps[-1]
         out_indices = self._eval_sketch_map(out_map_str, sketch_iv_z3)
         out_func = sketch_funcs[sketch.num_inputs]
+        out_shape = loop.tensor_shapes.get(output_tensor or "", [])
+        if not out_indices and len(out_shape) == 1 and out_shape[0] == 1:
+            # Dot-like scalar outputs are often represented as memref<1xT>; map () to [0].
+            out_indices = [IntVal(0)]
 
         if not parallel_ivs:
             out_val = out_func(*out_indices) if out_indices else Real(str(out_func))
@@ -764,9 +1173,9 @@ class Z3EquivalenceChecker:
                 src_iv = sketch_to_source.get(sdim, sdim)
                 lo, hi = bounds.get(src_iv, (0, 1))
                 v = sketch_iv_z3.get(sdim, Int(sdim))
-                par_bounds_parts.append(And(IntVal(int(lo)) <= v, v < IntVal(int(hi))))
+                par_bounds_parts.append(And(self._bound_expr(lo) <= v, v < self._bound_expr(hi)))
             par_bounds = And(*par_bounds_parts) if par_bounds_parts else BoolVal(True)
-            out_val = _apply_func(out_func, out_indices)
+            out_val = _apply_func(out_func, out_indices) if out_indices else Real(str(out_func))
             return [ForAll(par_vars, Implies(par_bounds, out_val == rhs))]
 
     def _build_sketch_rhs(
@@ -812,34 +1221,130 @@ class Z3EquivalenceChecker:
         # Has reductions — build concrete unrolled sum
         # Check if bounds are all concrete
         can_unroll = all(
-            isinstance(bounds.get(loop_iv, (0, 0))[1], int)
-            and (bounds.get(loop_iv, (0, 0))[1] - bounds.get(loop_iv, (0, 0))[0]) <= 32
+            self._bound_as_int(bounds.get(loop_iv, (0, 0))[0]) is not None
+            and self._bound_as_int(bounds.get(loop_iv, (0, 0))[1]) is not None
+            and (
+                self._bound_as_int(bounds.get(loop_iv, (0, 0))[1])
+                - self._bound_as_int(bounds.get(loop_iv, (0, 0))[0])
+            )
+            <= self.unroll_threshold
             for loop_iv in loop.reduction_vars
         )
 
         if can_unroll:
-            total: ArithRef = RealVal(0)
-            # We need to iterate over the reduction dimension ranges
-            for loop_iv, sketch_iv in zip(loop.reduction_vars, red_dims):
-                lo, hi = bounds.get(loop_iv, (0, 1))
-                for k_val in range(int(lo), int(hi)):
-                    local_iv = dict(sketch_iv_z3)
-                    local_iv[sketch_iv] = IntVal(k_val)
-                    if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
-                        a = self._read_at(sketch, 0, local_iv, sketch_funcs)
-                        b = self._read_at(sketch, 1, local_iv, sketch_funcs)
-                        total = total + a * b
-                    elif cp == ComputePayloadType.ACCUMULATE_ADD:
-                        a = self._read_at(sketch, 0, local_iv, sketch_funcs)
-                        total = total + a
-                    elif cp == ComputePayloadType.ACCUMULATE_MAX:
-                        a = self._read_at(sketch, 0, local_iv, sketch_funcs)
-                        total = If(a > total, a, total)
-                break   # handle only first reduction dim here
+            total: ArithRef = RealVal(-1e30) if cp == ComputePayloadType.ACCUMULATE_MAX else RealVal(0)
+
+            def iter_reduction_points(idx: int, current: Dict[str, int]):
+                if idx == len(loop.reduction_vars):
+                    yield dict(current)
+                    return
+
+                loop_iv = loop.reduction_vars[idx]
+                sketch_iv = red_dims[idx]
+                lo_raw, hi_raw = bounds.get(loop_iv, (0, 1))
+                lo = self._bound_as_int(lo_raw)
+                hi = self._bound_as_int(hi_raw)
+                if lo is None or hi is None:
+                    raise ValueError(
+                        "Cannot unroll sketch reduction with symbolic bounds; "
+                        "symbolic reduction requires a single reduction dimension."
+                    )
+
+                for value in range(lo, hi):
+                    current[sketch_iv] = value
+                    yield from iter_reduction_points(idx + 1, current)
+                    del current[sketch_iv]
+
+            for values in iter_reduction_points(0, {}):
+                local_iv = dict(sketch_iv_z3)
+                for sk_iv, value in values.items():
+                    local_iv[sk_iv] = IntVal(value)
+
+                if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    b = self._read_at(sketch, 1, local_iv, sketch_funcs)
+                    total = total + a * b
+                elif cp == ComputePayloadType.ACCUMULATE_ADD:
+                    total = total + self._read_at(sketch, 0, local_iv, sketch_funcs)
+                elif cp == ComputePayloadType.ACCUMULATE_MAX:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(a > total, a, total)
+                else:
+                    total = total + self._read_at(sketch, 0, local_iv, sketch_funcs)
+
             return total
+
+        symbolic_limit = self._symbolic_reduction_upper_bound(loop, bounds)
+        if symbolic_limit is not None and len(loop.reduction_vars) == 1 and len(red_dims) == 1:
+            red_loop_iv = loop.reduction_vars[0]
+            red_sketch_iv = red_dims[0]
+            lo_raw, hi_raw = bounds.get(red_loop_iv, (0, 1))
+            lo = self._bound_as_int(lo_raw)
+            if lo is None:
+                raise ValueError("Guarded symbolic sketch reduction requires concrete lower bound.")
+
+            hi_expr = self._bound_expr(hi_raw)
+            total: ArithRef = RealVal(-1e30) if cp == ComputePayloadType.ACCUMULATE_MAX else RealVal(0)
+
+            for k_val in range(lo, symbolic_limit):
+                local_iv = dict(sketch_iv_z3)
+                local_iv[red_sketch_iv] = IntVal(k_val)
+                active = IntVal(k_val) < hi_expr
+
+                if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    b = self._read_at(sketch, 1, local_iv, sketch_funcs)
+                    total = If(active, total + (a * b), total)
+                elif cp == ComputePayloadType.ACCUMULATE_ADD:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, total + a, total)
+                elif cp == ComputePayloadType.ACCUMULATE_MAX:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, If(a > total, a, total), total)
+                else:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, total + a, total)
+
+            return total
+
+        if len(loop.reduction_vars) != 1:
+            raise ValueError(
+                "Symbolic sketch reduction requires a single reduction dimension; "
+                "multi-reduction symbolic proofs are not yet supported."
+            )
+
+        red_loop_iv = loop.reduction_vars[0]
+        red_sketch_iv = red_dims[0]
+        lo, hi = bounds.get(red_loop_iv, (0, 1))
+        lo_expr = self._bound_expr(lo)
+        hi_expr = self._bound_expr(hi)
+
+        acc_func = RecFunction(f"_sketch_acc_{loop.func_name}_{red_loop_iv}", IntSort(), RealSort())
+        k = Int(f"{red_sketch_iv}_rf")
+
+        local_iv = dict(sketch_iv_z3)
+        local_iv[red_sketch_iv] = k - IntVal(1)
+
+        if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
+            step = self._read_at(sketch, 0, local_iv, sketch_funcs) * self._read_at(sketch, 1, local_iv, sketch_funcs)
+        elif cp in (ComputePayloadType.ACCUMULATE_ADD, ComputePayloadType.ACCUMULATE_MAX):
+            step = self._read_at(sketch, 0, local_iv, sketch_funcs)
         else:
-            # Symbolic reduction — use 0 as placeholder (will partially verify)
-            return RealVal(0)
+            step = self._read_at(sketch, 0, local_iv, sketch_funcs)
+
+        if cp == ComputePayloadType.ACCUMULATE_MAX:
+            base = RealVal(-1e30)
+            rec_step = If(step > acc_func(k - IntVal(1)), step, acc_func(k - IntVal(1)))
+        else:
+            base = RealVal(0)
+            rec_step = acc_func(k - IntVal(1)) + step
+
+        RecAddDefinition(
+            acc_func,
+            [k],
+            If(k == lo_expr, base, rec_step),
+        )
+        return acc_func(hi_expr)
 
     def _read_at(
         self,
@@ -861,32 +1366,22 @@ class Z3EquivalenceChecker:
 
     def _verify_symbolic(self, loop: LoopNestInfo, sketch: OperationSketch) -> VerificationReport:
         """
-        Attempt symbolic verification using Z3 quantifiers.
-        Less reliable than concrete unrolling but handles dynamic shapes.
+        Attempt direct symbolic verification using quantified constraints.
+        This path avoids fixed representative-size substitution.
         """
-        # For the symbolic case we do a best-effort check:
-        # substitute concrete small values (M=4, N=4, K=4) and verify concretely
-        concrete_loop = self._instantiate_concrete(loop, size=4)
-        report = self._verify_concrete(concrete_loop, sketch)
-        if report.result == CheckResult.EQUIVALENT:
-            report.notes += " [symbolic: verified on M=N=K=4 representative instance]"
-        return report
+        try:
+            report = self._verify_concrete(loop, sketch)
+        except ValueError as exc:
+            return VerificationReport(
+                result=CheckResult.UNKNOWN,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes=f"Symbolic verification unsupported for this kernel shape: {exc}",
+            )
 
-    def _instantiate_concrete(self, loop: LoopNestInfo, size: int = 4) -> LoopNestInfo:
-        """Replace all symbolic bounds with a concrete small integer."""
-        import copy
-        concrete = copy.deepcopy(loop)
-        for iv in concrete.bounds:
-            lo, hi = concrete.bounds[iv]
-            lo_int = lo if isinstance(lo, int) else 0
-            hi_int = hi if isinstance(hi, int) else size
-            concrete.bounds[iv] = (lo_int, hi_int)
-        # Also fix tensor shapes
-        for name in concrete.tensor_shapes:
-            concrete.tensor_shapes[name] = [
-                d if d > 0 else size for d in concrete.tensor_shapes[name]
-            ]
-        return concrete
+        if report.result == CheckResult.EQUIVALENT:
+            report.notes += " [symbolic: quantified verification path]"
+        return report
 
     # ------------------------------------------------------------------
     # Alignment: sketch dims ← source IVs

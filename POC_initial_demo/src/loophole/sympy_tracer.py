@@ -417,7 +417,7 @@ class SympyTracer:
             return 0.5
 
         except Exception:
-            return 0.3
+            return 0.0
 
     def _access_pattern_matches(self, loop: LoopNestInfo, sketch: OperationSketch) -> bool:
         """

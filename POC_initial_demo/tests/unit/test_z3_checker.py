@@ -3,13 +3,15 @@ Unit tests for the Z3 equivalence checker.
 Tests both the structural pre-filter and the full SMT check.
 """
 import pytest
+from z3 import Int, IntVal, simplify, substitute
 from loophole.affine_extractor import AffineExtractor
 from loophole.sketch_library import SKETCH_BY_NAME
-from loophole.z3_checker import Z3EquivalenceChecker, CheckResult, structural_match
+from loophole.z3_checker import Z3EquivalenceChecker, CheckResult, structural_match, _eval_index_expr
 from loophole.tests.fixtures import (
     MATMUL_MLIR,
     TRANSPOSE_2D_MLIR,
     DOT_PRODUCT_MLIR,
+    DOT_PRODUCT_SYMBOLIC_N_MLIR,
     ELEMENTWISE_ADD_MLIR,
     REDUCE_SUM_MLIR,
 )
@@ -101,3 +103,24 @@ class TestVerificationReport:
         sketch = SKETCH_BY_NAME["linalg.matmul"]
         report = checker.check(info, sketch)
         assert isinstance(report.result, CheckResult)
+
+
+class TestSymbolicPathHandling:
+    def test_eval_index_expr_handles_parenthesized_affine_form(self):
+        i = Int("i")
+        j = Int("j")
+        expr = _eval_index_expr("(i + 1) * 2 - j", {"i": i, "j": j})
+        value = simplify(substitute(expr, (i, IntVal(3)), (j, IntVal(4))))
+        assert value.as_long() == 4
+
+    def test_bound_expr_parses_symbolic_affine_expression(self, checker):
+        n = Int("N")
+        expr = checker._bound_expr("N + 2")
+        value = simplify(substitute(expr, (n, IntVal(5))))
+        assert value.as_long() == 7
+
+    def test_symbolic_dot_bound_no_longer_hits_encode_error(self, extractor, checker):
+        info = extractor.extract(DOT_PRODUCT_SYMBOLIC_N_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.dot"]
+        report = checker.check(info, sketch)
+        assert report.result != CheckResult.ENCODE_ERROR
