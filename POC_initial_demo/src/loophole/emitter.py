@@ -1081,6 +1081,20 @@ class LinalgEmitter:
 class StableHLOEmitter:
     """Emits MLIR StableHLO dialect code for matched sketches."""
 
+    _NAMED_OP_HANDLERS = {
+        "stablehlo.dot_general": "_emit_dot_general",
+        "stablehlo.dot_general_matvec": "_emit_dot_general",
+        "stablehlo.dot_general_vecdot": "_emit_dot_general",
+        "stablehlo.transpose": "_emit_transpose",
+        "stablehlo.add": "_emit_elementwise",
+        "stablehlo.subtract": "_emit_elementwise",
+        "stablehlo.multiply": "_emit_elementwise",
+        "stablehlo.reduce{add}": "_emit_reduce",
+        "stablehlo.reduce{add}_colsum": "_emit_reduce",
+        "stablehlo.reduce{max}": "_emit_reduce",
+        "stablehlo.convolution": "_emit_convolution",
+    }
+
     def _validate_required_metadata(self, sketch: OperationSketch, loop: LoopNestInfo) -> None:
         if not loop.tensor_shapes:
             raise EmissionError(
@@ -1111,26 +1125,14 @@ class StableHLOEmitter:
         name = func_name or f"lifted_{loop.func_name}"
         et = _map_elem_type(loop.element_type)
 
-        if "dot_general" in sketch.name:
-            body = self._emit_dot_general(sketch, loop, name, et)
-        elif "convolution" in sketch.name:
-            body = self._emit_convolution(sketch, loop, name, et)
-        elif "transpose" in sketch.name:
-            body = self._emit_transpose(sketch, loop, name, et)
-        elif sketch.compute_payload in (
-            ComputePayloadType.ADD,
-            ComputePayloadType.SUBTRACT,
-            ComputePayloadType.MULTIPLY,
-            ComputePayloadType.RELU,
-        ):
-            body = self._emit_elementwise(sketch, loop, name, et)
-        elif "reduce" in sketch.name:
-            body = self._emit_reduce(sketch, loop, name, et)
-        else:
+        handler_method = self._NAMED_OP_HANDLERS.get(sketch.name)
+        if not handler_method:
             raise EmissionError(
                 f"Unsupported StableHLO sketch '{sketch.name}' for emission. "
-                "Expected one of dot_general/convolution/transpose/elementwise/reduce families."
+                "StableHLO sketch-to-emitter mapping is out of sync with sketch_library.py."
             )
+
+        body = getattr(self, handler_method)(sketch, loop, name, et)
 
         lines = [
             "// LoopHole: Automatically lifted from scalar loop nest (StableHLO target)",

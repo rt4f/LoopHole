@@ -16,6 +16,16 @@ from loophole.tests.fixtures import (
     CONV_1D_STRIDED_DILATED_MLIR,
     CONV_2D_STRIDED_DILATED_MLIR,
     DOT_PRODUCT_MLIR,
+    ELEMENTWISE_ADD_MLIR,
+    ELEMENTWISE_SUB_MLIR,
+    ELEMENTWISE_MUL_MLIR,
+    REDUCE_SUM_MLIR,
+    REDUCE_SUM_COLWISE_MLIR,
+    REDUCE_MAX_MLIR,
+    MATMUL_DYNAMIC_DIMS_MLIR,
+    MIXED_REALWORLD_MATMUL_MLIR,
+    DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
+    CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
 )
 
 
@@ -216,8 +226,40 @@ class TestLinalgEmitter:
         validation = validate_mlir_artifact(result, mlir_verifier_cmd)
         assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
 
+    def test_emit_dynamic_dim_matmul_uses_symbolic_dims(self, extractor, linalg_emitter):
+        info = extractor.extract(MATMUL_DYNAMIC_DIMS_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "memref<?x?xf32>" in result
+
+    def test_emit_mixed_realworld_matmul_path(self, extractor, linalg_emitter):
+        info = extractor.extract(MIXED_REALWORLD_MATMUL_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "linalg.matmul" in result
+
+    def test_emit_symbolic_arith_dot_path(self, extractor, linalg_emitter):
+        info = extractor.extract(DOT_PRODUCT_SYMBOLIC_ARITH_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.dot"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "linalg.dot" in result
+
+    def test_emit_reordered_conv_attr_inference(self, extractor, linalg_emitter):
+        info = extractor.extract(CONV_2D_STRIDED_DILATED_REORDERED_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "dilations = dense<[3, 2]>" in result
+        assert "strides   = dense<[2, 1]>" in result
+
 
 class TestStableHLOEmitter:
+    def test_stablehlo_handler_map_covers_all_sketches(self):
+        from loophole.sketch_library import STABLEHLO_SKETCHES
+
+        mapped = set(StableHLOEmitter._NAMED_OP_HANDLERS.keys())
+        library = {s.name for s in STABLEHLO_SKETCHES}
+        assert mapped == library, f"StableHLO handler map mismatch: mapped={sorted(mapped)}, library={sorted(library)}"
+
     def test_emit_stablehlo_matmul(self, extractor, stablehlo_emitter):
         info = extractor.extract(MATMUL_MLIR)
         # find a stablehlo sketch
@@ -249,3 +291,36 @@ class TestStableHLOEmitter:
         result = stablehlo_emitter.emit(conv_sketches[0], info)
         assert "window = {stride = [2, 1]" in result
         assert "rhs_dilate = [3, 2]" in result
+
+    def test_emit_stablehlo_subtract(self, extractor, stablehlo_emitter):
+        info = extractor.extract(ELEMENTWISE_SUB_MLIR)
+        sketch = SKETCH_BY_NAME["stablehlo.subtract"]
+        result = stablehlo_emitter.emit(sketch, info)
+        assert "stablehlo.subtract" in result
+
+    def test_emit_stablehlo_multiply(self, extractor, stablehlo_emitter):
+        info = extractor.extract(ELEMENTWISE_MUL_MLIR)
+        sketch = SKETCH_BY_NAME["stablehlo.multiply"]
+        result = stablehlo_emitter.emit(sketch, info)
+        assert "stablehlo.multiply" in result
+
+    def test_emit_stablehlo_reduce_sum_rowwise(self, extractor, stablehlo_emitter):
+        info = extractor.extract(REDUCE_SUM_MLIR)
+        sketch = SKETCH_BY_NAME["stablehlo.reduce{add}"]
+        result = stablehlo_emitter.emit(sketch, info)
+        assert "stablehlo.reduce" in result
+        assert "across dimensions = [1]" in result
+
+    def test_emit_stablehlo_reduce_sum_colwise(self, extractor, stablehlo_emitter):
+        info = extractor.extract(REDUCE_SUM_COLWISE_MLIR)
+        sketch = SKETCH_BY_NAME["stablehlo.reduce{add}_colsum"]
+        result = stablehlo_emitter.emit(sketch, info)
+        assert "stablehlo.reduce" in result
+        assert "across dimensions = [0]" in result
+
+    def test_emit_stablehlo_reduce_max(self, extractor, stablehlo_emitter):
+        info = extractor.extract(REDUCE_MAX_MLIR)
+        sketch = SKETCH_BY_NAME["stablehlo.reduce{max}"]
+        result = stablehlo_emitter.emit(sketch, info)
+        assert "stablehlo.reduce" in result
+        assert "applies stablehlo.maximum" in result

@@ -6,7 +6,12 @@ import pytest
 from loophole.lifter import lift, Lifter, LiftResult
 from loophole.mlir_validator import validate_mlir_artifact
 from loophole.z3_checker import CheckResult
-from loophole.tests.fixtures import MATMUL_MLIR, MATMUL_128_MLIR
+from loophole.tests.fixtures import (
+    MATMUL_MLIR,
+    MATMUL_128_MLIR,
+    MIXED_REALWORLD_MATMUL_MLIR,
+    MATMUL_DYNAMIC_DIMS_MLIR,
+)
 
 
 class TestMatmulLiftPipeline:
@@ -31,6 +36,14 @@ class TestMatmulLiftPipeline:
         # stablehlo emission is best-effort
         if result.success:
             assert result.emitted_mlir is not None
+
+    def test_lift_stablehlo_strict_matmul_path(self):
+        result = Lifter(target="stablehlo", strict_mode=True, z3_timeout_ms=5000).lift(MATMUL_MLIR)
+        assert result.success, f"Expected strict proved stablehlo matmul; got: {result.summary()}"
+        assert result.matched_sketch is not None
+        assert result.matched_sketch.name == "stablehlo.dot_general"
+        assert result.emitted_mlir is not None
+        assert "stablehlo.dot_general" in result.emitted_mlir
 
     def test_lift_both_targets(self):
         result = lift(MATMUL_MLIR, target="both")
@@ -91,3 +104,15 @@ class TestMatmulLiftPipeline:
         assert result.emitted_mlir is not None
         validation = validate_mlir_artifact(result.emitted_mlir, mlir_verifier_cmd)
         assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
+
+    def test_lift_mixed_realworld_matmul_fixture(self):
+        result = lift(MIXED_REALWORLD_MATMUL_MLIR, target="linalg")
+        assert result.success, f"Expected proved mixed-loop matmul lift; got: {result.summary()}"
+        assert result.matched_sketch is not None
+        assert "matmul" in result.matched_sketch.name
+
+    def test_lift_dynamic_dim_matmul_fixture(self):
+        result = lift(MATMUL_DYNAMIC_DIMS_MLIR, target="linalg")
+        assert result.success or result.partial_success
+        assert result.emitted_mlir is not None
+        assert "?x?xf32" in result.emitted_mlir

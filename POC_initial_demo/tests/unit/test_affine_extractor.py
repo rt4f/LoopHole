@@ -16,6 +16,10 @@ from loophole.tests.fixtures import (
     MIXED_SCF_AFFINE_REDUCTION_MLIR,
     INDEX_VARIATION_EQ_A_MLIR,
     INDEX_VARIATION_EQ_B_MLIR,
+    MIXED_REALWORLD_MATMUL_MLIR,
+    MATMUL_DYNAMIC_DIMS_MLIR,
+    DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
+    CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
 )
 
 
@@ -240,3 +244,32 @@ class TestIndexNormalization:
         read_idx = info.reads[0].index_exprs[0]
         write_idx = info.writes[0].index_exprs[0]
         assert read_idx == write_idx
+
+
+class TestStressFixturesB10:
+    def test_mixed_realworld_loop_parse_and_roles(self, extractor):
+        info = extractor.extract(MIXED_REALWORLD_MATMUL_MLIR)
+        assert len(info.loop_order) == 3
+        assert set(info.parallel_vars) == {"i", "j"}
+        assert set(info.reduction_vars) == {"k"}
+
+    def test_dynamic_dim_memrefs_are_preserved(self, extractor):
+        info = extractor.extract(MATMUL_DYNAMIC_DIMS_MLIR)
+        assert info.tensor_shapes["%A"] == [-1, -1]
+        assert info.tensor_shapes["%B"] == [-1, -1]
+        assert info.tensor_shapes["%C"] == [-1, -1]
+
+    def test_symbolic_bound_and_unusual_index_arithmetic_normalize(self, extractor):
+        info = extractor.extract(DOT_PRODUCT_SYMBOLIC_ARITH_MLIR)
+        assert info.bounds["k"][1] == "N"
+        a_read = [r for r in info.reads if r.tensor_name == "%A"][0]
+        b_read = [r for r in info.reads if r.tensor_name == "%B"][0]
+        assert a_read.index_exprs[0] == "k"
+        assert b_read.index_exprs[0] == "k"
+
+    def test_reordered_conv_affine_indices_keep_coeff_structure(self, extractor):
+        info = extractor.extract(CONV_2D_STRIDED_DILATED_REORDERED_MLIR)
+        i_read = [r for r in info.reads if r.tensor_name == "%I"][0]
+        h_expr, w_expr = i_read.index_exprs[0], i_read.index_exprs[1]
+        assert "oh" in h_expr and "kh" in h_expr
+        assert "ow" in w_expr and "kw" in w_expr

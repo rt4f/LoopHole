@@ -27,14 +27,16 @@ This folder contains all documentation for Person B's parallel execution lane in
 |---|---|---|
 | [08_convolution_attribute_inference_policy.md](08_convolution_attribute_inference_policy.md) | B-07: Infer/propagate convolution attributes | Done |
 | [09_emitted_mlir_validation_pipeline.md](09_emitted_mlir_validation_pipeline.md) | B-08: Add artifact-level emitted MLIR validation pipeline | Done |
+| [10_stablehlo_emitter_hooks_sync.md](10_stablehlo_emitter_hooks_sync.md) | B-09: Add emitter hooks for new StableHLO operations | Done |
+| [11_fixture_realism_stress_coverage.md](11_fixture_realism_stress_coverage.md) | B-10: Expand fixture realism for parser and emitter stress testing | Done |
 
-Future docs will be added to this folder as B-09 through B-12 tasks are executed.
+Future docs will be added to this folder as B-11 through B-12 tasks are executed.
 
 ## Quick Reference
 
-**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline)  
-**Current focus:** Ready for B-09  
-**Test status:** 174 passing, 1 skipped  
+**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration)  
+**Current focus:** Ready for B-11  
+**Test status:** 232 passing, 1 skipped  
 **Demo status:** CLI 7/10 proved, 3 partial; standalone script has stale field reference  
 
 See individual docs for detailed audit tables, disposition mappings, and implementation details.

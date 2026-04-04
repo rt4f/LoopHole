@@ -10,6 +10,7 @@ from loophole.tests.fixtures import (
     CONV_2D_SIMPLE_MLIR,
     CONV_2D_NHWC_MLIR,
     CONV_2D_STRIDED_DILATED_MLIR,
+    CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
 )
 
 
@@ -117,6 +118,29 @@ class TestConv2DAttrInference:
         assert result.emitted_mlir is not None
         validation = validate_mlir_artifact(result.emitted_mlir, mlir_verifier_cmd)
         assert validation.ok, f"Verifier failed: {validation.stderr or validation.stdout}"
+
+    def test_reordered_affine_conv_fixture_emits_same_attrs(self):
+        lifter = Lifter(target="linalg")
+        original_verify = lifter._verify_candidates
+
+        def _verify_equivalent(loop_info, candidates):
+            if not candidates:
+                return original_verify(loop_info, candidates)
+            sketch, conf = candidates[0]
+            report = VerificationReport(
+                result=CheckResult.EQUIVALENT,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes="Forced equivalent for reordered-conv emission test",
+            )
+            return (sketch, report, conf)
+
+        lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
+        result = lifter.lift(CONV_2D_STRIDED_DILATED_REORDERED_MLIR)
+        assert result.success or result.partial_success
+        assert result.emitted_mlir is not None
+        assert "dilations = dense<[3, 2]>" in result.emitted_mlir
+        assert "strides   = dense<[2, 1]>" in result.emitted_mlir
 
 
 def test_conv2d_simple_not_refuted_in_phase1_strict_semantics():

@@ -379,6 +379,34 @@ func.func @elementwise_add(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<
 }
 """
 
+ELEMENTWISE_SUB_MLIR = """\
+func.func @elementwise_sub(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i, %j] : memref<4x4xf32>
+      %sub = arith.subf %a, %b : f32
+      affine.store %sub, %C[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+ELEMENTWISE_MUL_MLIR = """\
+func.func @elementwise_mul(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i, %j] : memref<4x4xf32>
+      %mul = arith.mulf %a, %b : f32
+      affine.store %mul, %C[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
 # ---------------------------------------------------------------------------
 # Row-wise Sum Reduction: B[i] += A[i,j]
 # ---------------------------------------------------------------------------
@@ -391,6 +419,34 @@ func.func @reduce_sum(%A: memref<4x4xf32>, %B: memref<4xf32>) {
       %b = affine.load %B[%i] : memref<4xf32>
       %add = arith.addf %b, %a : f32
       affine.store %add, %B[%i] : memref<4xf32>
+    }
+  }
+  return
+}
+"""
+
+REDUCE_SUM_COLWISE_MLIR = """\
+func.func @reduce_sum_colwise(%A: memref<4x4xf32>, %B: memref<4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%j] : memref<4xf32>
+      %add = arith.addf %b, %a : f32
+      affine.store %add, %B[%j] : memref<4xf32>
+    }
+  }
+  return
+}
+"""
+
+REDUCE_MAX_MLIR = """\
+func.func @reduce_max(%A: memref<4x4xf32>, %B: memref<4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i] : memref<4xf32>
+      %max = arith.maxf %b, %a : f32
+      affine.store %max, %B[%i] : memref<4xf32>
     }
   }
   return
@@ -489,6 +545,88 @@ func.func @index_variation_b(%A: memref<16xf32>, %B: memref<16xf32>) {
 """
 
 # ---------------------------------------------------------------------------
+# B-10 stress fixtures (real-world parser/emitter edge coverage)
+# ---------------------------------------------------------------------------
+
+# Edge target: mixed affine/scf loops with non-trivial scf bounds and steps.
+MIXED_REALWORLD_MATMUL_MLIR = """\
+func.func @mixed_realworld_matmul(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c2 = arith.constant 2 : index
+  scf.for %i = %c0 to %c4 step %c2 {
+    affine.for %j = 0 to 4 {
+      affine.for %k = 0 to 4 {
+        %a = affine.load %A[%i, %k] : memref<4x4xf32>
+        %b = affine.load %B[%k, %j] : memref<4x4xf32>
+        %c = affine.load %C[%i, %j] : memref<4x4xf32>
+        %mul = arith.mulf %a, %b : f32
+        %add = arith.addf %c, %mul : f32
+        affine.store %add, %C[%i, %j] : memref<4x4xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
+# Edge target: dynamic memref dimensions with fixed loop bounds.
+MATMUL_DYNAMIC_DIMS_MLIR = """\
+func.func @matmul_dynamic_dims(%A: memref<?x?xf32>, %B: memref<?x?xf32>, %C: memref<?x?xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      affine.for %k = 0 to 4 {
+        %a = affine.load %A[%i, %k] : memref<?x?xf32>
+        %b = affine.load %B[%k, %j] : memref<?x?xf32>
+        %c = affine.load %C[%i, %j] : memref<?x?xf32>
+        %mul = arith.mulf %a, %b : f32
+        %add = arith.addf %c, %mul : f32
+        affine.store %add, %C[%i, %j] : memref<?x?xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
+# Edge target: symbolic loop bound (%N) with unusual index arithmetic that
+# normalizes to canonical IV-based indexing.
+DOT_PRODUCT_SYMBOLIC_ARITH_MLIR = """\
+func.func @dot_symbolic_arith(%A: memref<32xf32>, %B: memref<32xf32>, %c: memref<1xf32>, %N: index) {
+  affine.for %k = 0 to %N {
+    %a = affine.load %A[%k + 2 - 2] : memref<32xf32>
+    %b = affine.load %B[1 + %k - 1] : memref<32xf32>
+    %c_val = affine.load %c[0] : memref<1xf32>
+    %mul = arith.mulf %a, %b : f32
+    %add = arith.addf %c_val, %mul : f32
+    affine.store %add, %c[0] : memref<1xf32>
+  }
+  return
+}
+"""
+
+# Edge target: non-unit convolution attrs with reordered affine terms.
+CONV_2D_STRIDED_DILATED_REORDERED_MLIR = """\
+func.func @conv2d_strided_dilated_reordered(%I: memref<8x8xf32>, %K: memref<2x2xf32>, %O: memref<3x6xf32>) {
+  affine.for %oh = 0 to 3 {
+    affine.for %ow = 0 to 6 {
+      affine.for %kh = 0 to 2 {
+        affine.for %kw = 0 to 2 {
+          %i_val = affine.load %I[%kh * 3 + %oh * 2, %kw * 2 + %ow] : memref<8x8xf32>
+          %k_val = affine.load %K[%kh, %kw] : memref<2x2xf32>
+          %o_val = affine.load %O[%oh, %ow] : memref<3x6xf32>
+          %mul = arith.mulf %i_val, %k_val : f32
+          %add = arith.addf %o_val, %mul : f32
+          affine.store %add, %O[%oh, %ow] : memref<3x6xf32>
+        }
+      }
+    }
+  }
+  return
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Demo fixture dictionary — ordered for display
 # ---------------------------------------------------------------------------
 
@@ -500,10 +638,18 @@ DEMO_FIXTURES = {
     "conv2d_simple":      CONV_2D_SIMPLE_MLIR,
     "conv2d_strided_dilated": CONV_2D_STRIDED_DILATED_MLIR,
     "conv2d_nhwc":        CONV_2D_NHWC_MLIR,
+    "conv2d_strided_dilated_reordered": CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
     "dot_product":        DOT_PRODUCT_MLIR,
+    "dot_symbolic_arith": DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     "matvec":             MATVEC_MLIR,
+    "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
+    "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
     "elementwise_add":    ELEMENTWISE_ADD_MLIR,
+    "elementwise_sub":    ELEMENTWISE_SUB_MLIR,
+    "elementwise_mul":    ELEMENTWISE_MUL_MLIR,
     "reduce_sum":         REDUCE_SUM_MLIR,
+    "reduce_sum_colwise": REDUCE_SUM_COLWISE_MLIR,
+    "reduce_max":         REDUCE_MAX_MLIR,
     "relu":               RELU_MLIR,
 }
 
@@ -521,6 +667,10 @@ ALL_FIXTURES = {
   "transpose_3d_perm_201":  TRANSPOSE_3D_PERM_201_MLIR,
   "mixed_affine_scf_matmul": MIXED_AFFINE_SCF_MATMUL_MLIR,
   "mixed_scf_affine_reduction": MIXED_SCF_AFFINE_REDUCTION_MLIR,
+  "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
+  "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
+  "dot_symbolic_arith": DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
+  "conv2d_strided_dilated_reordered": CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
   "index_variation_eq_a": INDEX_VARIATION_EQ_A_MLIR,
   "index_variation_eq_b": INDEX_VARIATION_EQ_B_MLIR,
 }
