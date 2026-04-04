@@ -161,3 +161,65 @@ def test_batch_report_includes_verification_diagnostics(monkeypatch, tmp_path) -
     assert row["sympy_z3_disagreement"] == "HIGH_CONFIDENCE_REFUTED"
     assert row["mismatch_summary"] == "i=0, j=1"
     assert row["counterexample_bindings"] == {"i": "0", "j": "1"}
+
+
+def test_batch_report_includes_profile_and_strict_mode(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    report_path = tmp_path / "profile_report.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "ci-strict",
+            "--report",
+            "--report-path",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["profile"] == "ci-strict"
+    assert payload["summary"]["strict_mode"] is True
+
+
+def test_batch_strict_flag_overrides_profile_strictness(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class _FakeLifter:
+        def lift(self, _src: str) -> LiftResult:
+            return _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_factory(_cls, **kwargs):
+        captured.update(kwargs)
+        return _FakeLifter()
+
+    monkeypatch.setattr("loophole.cli.Lifter.from_policy_profile", classmethod(_fake_factory))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "local-explore",
+            "--strict",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["profile_name"] == "local-explore"
+    assert captured["strict_mode"] is True

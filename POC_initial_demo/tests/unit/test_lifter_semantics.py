@@ -4,7 +4,7 @@ Unit tests for LiftResult trust semantics and strict-mode behavior.
 
 from types import SimpleNamespace
 
-from loophole.lifter import Lifter, LiftResult, LiftResultState
+from loophole.lifter import Lifter, LiftResult, LiftResultState, resolve_policy_profile
 from loophole.z3_checker import CheckResult, VerificationReport
 
 
@@ -126,3 +126,34 @@ def test_lifter_non_strict_timeout_allows_partial_emission() -> None:
     assert result.result_state == LiftResultState.UNPROVED_TIMEOUT
     assert result.emitted_mlir is not None
     assert result.partial_success
+
+
+def test_policy_profile_defaults_to_local_explore(monkeypatch) -> None:
+    monkeypatch.delenv("LOOPHOLE_POLICY_PROFILE", raising=False)
+    profile = resolve_policy_profile()
+    assert profile.name == "local-explore"
+    assert not profile.strict_mode
+
+
+def test_policy_profile_can_be_selected_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("LOOPHOLE_POLICY_PROFILE", "ci-strict")
+    profile = resolve_policy_profile()
+    assert profile.name == "ci-strict"
+    assert profile.strict_mode
+
+
+def test_lifter_from_policy_profile_uses_profile_defaults() -> None:
+    lifter = Lifter.from_policy_profile(target="linalg", profile_name="ci-strict")
+    assert lifter.strict_mode
+    assert lifter.z3_timeout_ms == 15_000
+
+
+def test_lifter_from_policy_profile_allows_explicit_overrides() -> None:
+    lifter = Lifter.from_policy_profile(
+        target="linalg",
+        profile_name="ci-strict",
+        strict_mode=False,
+        z3_timeout_ms=7_000,
+    )
+    assert not lifter.strict_mode
+    assert lifter.z3_timeout_ms == 7_000

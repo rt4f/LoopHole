@@ -23,10 +23,11 @@ The lifter returns a LiftResult which contains:
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 
 from loophole.affine_extractor import AffineExtractor, LoopNestInfo
 from loophole.emitter import LinalgEmitter, StableHLOEmitter
@@ -42,6 +43,63 @@ from loophole.z3_checker import (
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PolicyProfile:
+    """Policy profile used to configure strictness and solver defaults."""
+
+    name: str
+    strict_mode: bool
+    z3_timeout_ms: int
+
+
+POLICY_PROFILE_ENV_VAR = "LOOPHOLE_POLICY_PROFILE"
+DEFAULT_POLICY_PROFILE = "local-explore"
+
+POLICY_PROFILES: Dict[str, PolicyProfile] = {
+    "local-explore": PolicyProfile(
+        name="local-explore",
+        strict_mode=False,
+        z3_timeout_ms=10_000,
+    ),
+    "ci-strict": PolicyProfile(
+        name="ci-strict",
+        strict_mode=True,
+        z3_timeout_ms=15_000,
+    ),
+}
+
+POLICY_PROFILE_CHOICES: Tuple[str, ...] = ("default",) + tuple(POLICY_PROFILES.keys())
+
+
+def resolve_policy_profile(
+    profile_name: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> PolicyProfile:
+    """
+    Resolve the runtime policy profile.
+
+    Selection order:
+      1. Explicit profile_name unless it is "default".
+      2. Environment variable LOOPHOLE_POLICY_PROFILE.
+      3. DEFAULT_POLICY_PROFILE.
+    """
+
+    selected = (profile_name or "default").strip().lower()
+
+    if selected == "default":
+        env_map = env or os.environ
+        env_selected = env_map.get(POLICY_PROFILE_ENV_VAR, "").strip().lower()
+        selected = env_selected or DEFAULT_POLICY_PROFILE
+
+    if selected not in POLICY_PROFILES:
+        valid = ", ".join(POLICY_PROFILE_CHOICES)
+        raise ValueError(
+            f"Unknown policy profile '{selected}'. Valid profiles: {valid}."
+        )
+
+    return POLICY_PROFILES[selected]
 
 
 class LiftResultState(Enum):
@@ -165,6 +223,34 @@ class Lifter:
         self._z3 = Z3EquivalenceChecker(timeout_ms=z3_timeout_ms)
         self._linalg_emitter = LinalgEmitter()
         self._stablehlo_emitter = StableHLOEmitter()
+
+    @classmethod
+    def from_policy_profile(
+        cls,
+        *,
+        target: str = "linalg",
+        profile_name: Optional[str] = None,
+        z3_timeout_ms: Optional[int] = None,
+        strict_mode: Optional[bool] = None,
+        top_k: int = 3,
+        verbose: bool = False,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> "Lifter":
+        """
+        Build a Lifter from a named policy profile with explicit overrides.
+
+        Explicit arguments override profile defaults.
+        """
+        profile = resolve_policy_profile(profile_name=profile_name, env=env)
+        resolved_timeout = z3_timeout_ms if z3_timeout_ms is not None else profile.z3_timeout_ms
+        resolved_strict = strict_mode if strict_mode is not None else profile.strict_mode
+        return cls(
+            target=target,
+            z3_timeout_ms=resolved_timeout,
+            top_k=top_k,
+            strict_mode=resolved_strict,
+            verbose=verbose,
+        )
 
     # ------------------------------------------------------------------
     # Public API

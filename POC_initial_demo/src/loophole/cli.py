@@ -40,7 +40,14 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich import print as rprint
 
-from loophole.lifter import Lifter, LiftResult, LiftResultState, lift as lift_one
+from loophole.lifter import (
+    POLICY_PROFILE_CHOICES,
+    Lifter,
+    LiftResult,
+    LiftResultState,
+    lift as lift_one,
+    resolve_policy_profile,
+)
 from loophole.polygeist_frontend import (
     CgeistInvocation,
     CgeistResult,
@@ -254,8 +261,10 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
               default="linalg", show_default=True,
               help="Target dialect to lift into")
-@click.option("--z3-timeout", type=int, default=10_000, show_default=True,
-              help="Z3 solver timeout per check in milliseconds")
+@click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
+              help="Policy profile used to set strictness/timeouts")
+@click.option("--z3-timeout", type=int, default=None,
+              help="Z3 solver timeout per check in milliseconds (default: profile value)")
 @click.option("--top-k", type=int, default=3, show_default=True,
               help="Number of top SymPy candidates to verify with Z3")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
@@ -272,7 +281,8 @@ def lift_cmd(
     input_file: str,
     output: Optional[str],
     target: str,
-    z3_timeout: int,
+    profile: str,
+    z3_timeout: Optional[int],
     top_k: int,
     verbose: bool,
     report: bool,
@@ -286,7 +296,10 @@ def lift_cmd(
 
     INPUT_FILE: Path to the .mlir file containing the scalar loop nest.
     """
-    if strict and no_verify:
+    resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
+    effective_strict = strict or resolved_profile.strict_mode
+
+    if effective_strict and no_verify:
         raise click.UsageError("--strict cannot be combined with --no-verify.")
 
     src = Path(input_file).read_text(encoding="utf-8")
@@ -300,11 +313,12 @@ def lift_cmd(
     ) as progress:
         task = progress.add_task(f"[cyan]Lifting {input_file}...", total=None)
 
-        lifter = Lifter(
+        lifter = Lifter.from_policy_profile(
             target=target,
             z3_timeout_ms=0 if no_verify else z3_timeout,
+            profile_name=profile,
             top_k=top_k,
-            strict_mode=strict,
+            strict_mode=True if strict else None,
             verbose=verbose,
         )
         result = lifter.lift(src)
@@ -315,7 +329,7 @@ def lift_cmd(
         output,
         report,
         verbose,
-        strict_mode=strict,
+        strict_mode=effective_strict,
         validate_emitted=validate_emitted,
         mlir_verifier=mlir_verifier,
     )
@@ -335,6 +349,13 @@ def _result_state_color(state: LiftResultState) -> str:
     if state == LiftResultState.UNPROVED_TIMEOUT:
         return "yellow"
     return "red"
+
+
+def _resolve_profile_or_usage_error(profile_name: str):
+    try:
+        return resolve_policy_profile(profile_name=profile_name)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
 
 def _print_lift_result(
@@ -564,8 +585,10 @@ def cgeist_cmd(
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
               default="linalg", show_default=True,
               help="Target dialect to lift into")
-@click.option("--z3-timeout", type=int, default=10_000, show_default=True,
-              help="Z3 solver timeout per check in milliseconds")
+@click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
+              help="Policy profile used to set strictness/timeouts")
+@click.option("--z3-timeout", type=int, default=None,
+              help="Z3 solver timeout per check in milliseconds (default: profile value)")
 @click.option("--top-k", type=int, default=3, show_default=True,
               help="Number of top SymPy candidates to verify with Z3")
 @click.option("--no-verify", is_flag=True,
@@ -599,7 +622,8 @@ def lift_c_cmd(
     output: Optional[str],
     mlir_output: Optional[str],
     target: str,
-    z3_timeout: int,
+    profile: str,
+    z3_timeout: Optional[int],
     top_k: int,
     no_verify: bool,
     strict: bool,
@@ -619,7 +643,10 @@ def lift_c_cmd(
     """One-step flow: C/C++ source -> cgeist MLIR -> lifted tensor dialect."""
     if not source_files:
         raise click.UsageError("At least one source file is required.")
-    if strict and no_verify:
+    resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
+    effective_strict = strict or resolved_profile.strict_mode
+
+    if effective_strict and no_verify:
         raise click.UsageError("--strict cannot be combined with --no-verify.")
 
     frontend = PolygeistFrontend(
@@ -658,11 +685,12 @@ def lift_c_cmd(
         if verbose:
             console.print(f"[dim]Intermediate MLIR written to: {mlir_output}[/dim]")
 
-    lifter = Lifter(
+    lifter = Lifter.from_policy_profile(
         target=target,
         z3_timeout_ms=0 if no_verify else z3_timeout,
+        profile_name=profile,
         top_k=top_k,
-        strict_mode=strict,
+        strict_mode=True if strict else None,
         verbose=verbose,
     )
     result = lifter.lift(cgeist_result.mlir_text)
@@ -678,7 +706,7 @@ def lift_c_cmd(
         output,
         report,
         verbose,
-        strict_mode=strict,
+        strict_mode=effective_strict,
         validate_emitted=validate_emitted,
         mlir_verifier=mlir_verifier,
     )
@@ -776,7 +804,12 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
               help="Directory for emitted .mlir files (default: same as input)")
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
               default="linalg", show_default=True)
-@click.option("--z3-timeout", type=int, default=10_000, show_default=True)
+@click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
+              help="Policy profile used to set strictness/timeouts")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved outputs")
+@click.option("--z3-timeout", type=int, default=None,
+              help="Z3 solver timeout per check in milliseconds (default: profile value)")
 @click.option("--report", is_flag=True, help="Write JSON report for batch run")
 @click.option("--report-path", type=click.Path(path_type=Path), default=None,
               help="Optional JSON report path (default: <output-dir>/loophole_report.json)")
@@ -789,7 +822,9 @@ def batch(
     input_dir: str,
     output_dir: Optional[str],
     target: str,
-    z3_timeout: int,
+    profile: str,
+    strict: bool,
+    z3_timeout: Optional[int],
     report: bool,
     report_path: Optional[Path],
     validate_emitted: bool,
@@ -810,7 +845,16 @@ def batch(
         console.print(f"[yellow]No .mlir files found in {input_dir}[/yellow]")
         return
 
-    lifter = Lifter(target=target, z3_timeout_ms=z3_timeout, verbose=verbose)
+    resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
+    effective_strict = strict or resolved_profile.strict_mode
+
+    lifter = Lifter.from_policy_profile(
+        target=target,
+        profile_name=profile,
+        z3_timeout_ms=z3_timeout,
+        strict_mode=True if strict else None,
+        verbose=verbose,
+    )
 
     results = []
     state_counts = {
@@ -935,12 +979,14 @@ def batch(
             "input_dir": str(in_path),
             "output_dir": str(out_path),
             "target": target,
-            "z3_timeout_ms": z3_timeout,
+            "z3_timeout_ms": lifter.z3_timeout_ms,
             "summary": {
                 "total_files": total,
                 "proved": proved,
                 "unproved_timeout": unproved_timeout,
                 "refuted": refuted,
+                "profile": resolved_profile.name,
+                "strict_mode": effective_strict,
                 "accepted_loose": sum(1 for r in results if r["accepted_loose"]),
                 "accepted_strict": sum(1 for r in results if r["accepted_strict"]),
             },

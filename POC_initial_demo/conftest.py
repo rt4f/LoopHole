@@ -8,7 +8,7 @@ import pytest
 from loophole.affine_extractor import AffineExtractor
 from loophole.z3_checker import Z3EquivalenceChecker
 from loophole.emitter import LinalgEmitter, StableHLOEmitter
-from loophole.lifter import Lifter
+from loophole.lifter import Lifter, resolve_policy_profile
 from loophole.tests.fixtures import (
     MATMUL_MLIR,
     TRANSPOSE_2D_MLIR,
@@ -65,12 +65,20 @@ def stablehlo_emitter():
 
 @pytest.fixture(scope="session")
 def lifter_linalg():
-    return Lifter(target="linalg", z3_timeout_ms=15_000)
+    profile = resolve_policy_profile()
+    return Lifter.from_policy_profile(target="linalg", profile_name=profile.name)
 
 
 @pytest.fixture(scope="session")
 def lifter_stablehlo():
-    return Lifter(target="stablehlo", z3_timeout_ms=15_000)
+    profile = resolve_policy_profile()
+    return Lifter.from_policy_profile(target="stablehlo", profile_name=profile.name)
+
+
+@pytest.fixture(scope="session")
+def policy_profile_name() -> str:
+    """Active policy profile name resolved from CLI/env defaults."""
+    return resolve_policy_profile().name
 
 
 # ---------------------------------------------------------------------------
