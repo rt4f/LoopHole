@@ -27,6 +27,9 @@ Once lifted, these programs can be passed to domain-specific ML compilers (XLA, 
 | [07 — POC Implementation Audit](./docs/07_poc_implementation_audit.md) | Ground-truth implementation status, limitations, hardcoding/stubs inventory, and prioritized fix plan |
 | [08 — Three-Person Parallel Execution Plan](./docs/08_three_person_parallel_execution_plan.md) | Execution-ready task graph for three contributors with dependencies, checkpoints, and metrics |
 | [09 — Docker/Polygeist Delivery Handoff](./docs/09_docker_polygeist_delivery_handoff.md) | Full change log, validation evidence, drawbacks, limitations, and distribution plan for prebuilt images |
+| [10 — Project Status: Achievements, Limitations, and Failure Analysis](./docs/10_project_status_achievements_limitations.md) | Consolidated project-wide status synthesis across core docs and A/B/C execution lanes |
+| [11 — Future Plan and Improvement Strategy](./docs/11_future_plan_and_improvements.md) | Prioritized improvement roadmap with trust, robustness, coverage, and operational targets |
+| [12 — Three-Person Parallel Plan V2 (12 Weeks)](./docs/12_three_person_parallel_plan_v2_12_weeks.md) | New execution-ready 12-week parallel plan with role split, sprint gates, dependencies, and metrics |
 | [POC Docker Polygeist Quickstart](./POC_initial_demo/docker/README.md) | Reproducible Polygeist+MLIR container with two-step C/C++ compile-then-lift workflow |
 | [Person C Lane Docs](./docs/C/README.md) | Phase 2 reporting, batch JSON schema, and weekly benchmark workflow documentation |
 
@@ -57,4 +60,5 @@ Once lifted, these programs can be passed to domain-specific ML compilers (XLA, 
 - If you are **starting from scratch**, read documents in order: `01 → 02 → 03 → 04`.
 - If you want to **understand what has already been done** and avoid duplicating existing work, focus on `02` (State of the Art) and `05` (Novel Research Directions).
 - If you want to **start implementing** the 3-month POC, jump directly to `04` (Implementation Roadmap).
+- If you want a **current project reality snapshot**, start with `10`, then `11`, then `12`.
 - For **dialect-level MLIR API reference**, see `03` (Architecture Deep Dive).
