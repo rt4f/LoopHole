@@ -3,7 +3,7 @@ Unit tests for the Z3 equivalence checker.
 Tests both the structural pre-filter and the full SMT check.
 """
 import pytest
-from z3 import Int, IntVal, simplify, substitute
+from z3.z3 import Int, IntVal, simplify, substitute
 from loophole.affine_extractor import AffineExtractor
 from loophole.sketch_library import SKETCH_BY_NAME
 from loophole.z3_checker import Z3EquivalenceChecker, CheckResult, structural_match, _eval_index_expr

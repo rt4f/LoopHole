@@ -143,7 +143,7 @@ def _build_docker_compile_script(
 @click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
               help="Output MLIR file path (default: <source_stem>.mlir)")
-@click.option("--docker-image", default="loophole-polygeist:llvm17", show_default=True,
+@click.option("--docker-image", default="ghcr.io/schizoid-man/loophole-polygeist:llvm17", show_default=True,
               help="Docker image containing cgeist/cgeist++ and mlir-opt")
 @click.option("--std", default=None,
               help="Language standard passed to Polygeist frontend (for example c11 or c++17)")

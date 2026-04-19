@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from z3 import (
+from z3.z3 import (
     And, ArithRef, ArrayRef, ArraySort, BoolRef, ExprRef, ForAll, Function,
     If, IntSort, Not, Or, RealSort, RealVal, RecAddDefinition, RecFunction,
     Solver, Sum, Then, Tactic, Implies, Int, Ints, Real, Reals,
