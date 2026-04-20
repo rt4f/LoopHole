@@ -31,7 +31,7 @@ Once lifted, these programs can be passed to domain-specific ML compilers (XLA, 
 | [11 — Future Plan and Improvement Strategy](./docs/11_future_plan_and_improvements.md) | Prioritized improvement roadmap with trust, robustness, coverage, and operational targets |
 | [12 — Three-Person Parallel Plan V2 (12 Weeks)](./docs/12_three_person_parallel_plan_v2_12_weeks.md) | New execution-ready 12-week parallel plan with role split, sprint gates, dependencies, and metrics |
 | [POC Docker Polygeist Quickstart](./POC_initial_demo/docker/README.md) | Reproducible Polygeist+MLIR container with two-step C/C++ compile-then-lift workflow |
-| [Person C Lane Docs](./docs/C/README.md) | Phase 2 reporting, batch JSON schema, and weekly benchmark workflow documentation |
+| [Person C Lane Docs](./docs/C/README.md) | Phase 2 to Phase 4 workflow docs including quickstart/runbooks, weekly trend dashboards, canonical StableHLO suite, release readiness, and research decision package |
 
 ---
 

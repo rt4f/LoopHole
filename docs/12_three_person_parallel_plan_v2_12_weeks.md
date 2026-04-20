@@ -256,3 +256,31 @@ Operations metrics:
 
 Related strategy document:
 - [11 - Future Plan and Improvement Strategy](./11_future_plan_and_improvements.md)
+
+---
+
+## 12.10 Implementation Update (2026-04-20)
+
+Person C deliverables implemented for C-12 through C-17:
+
+1. C-12 quickstart and runbook consolidation:
+- `docs/C/06_c12_quickstart_runbook_profiles.md`
+
+2. C-13 weekly dashboard hardening and trend summaries:
+- `docs/C/07_c13_weekly_dashboard_hardening.md`
+- `POC_initial_demo/scripts/generate_weekly_benchmark_report.py` (schema 1.1 trend support)
+
+3. C-14 StableHLO canonical-suite expansion and report integration:
+- `docs/C/08_c14_stablehlo_canonical_suite.md`
+- canonical summary fields integrated into batch and weekly reports
+
+4. C-15 batch profile UX presets and reproducibility metadata:
+- aliases `trusted` and `exploratory` accepted by policy profile resolution
+- report `run_metadata` and per-file source hashes added
+- `docs/C/09_c15_batch_profile_presets_reproducibility.md`
+
+5. C-16 release-readiness documentation and troubleshooting matrix:
+- `docs/C/10_c16_release_readiness_troubleshooting_matrix.md`
+
+6. C-17 research-track decision package with ranked recommendation:
+- `docs/C/11_c17_research_track_decision_package.md`

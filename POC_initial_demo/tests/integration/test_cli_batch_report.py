@@ -79,16 +79,21 @@ def test_batch_report_writes_state_summary_and_results(monkeypatch, tmp_path) ->
     assert report_path.exists()
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
+    assert "1.0" in payload["compatible_schema_versions"]
     assert payload["summary"]["total_files"] == 3
     assert payload["summary"]["proved"] == 1
     assert payload["summary"]["unproved_timeout"] == 1
     assert payload["summary"]["refuted"] == 1
     assert payload["summary"]["accepted_loose"] == 2
     assert payload["summary"]["accepted_strict"] == 1
+    assert payload["run_metadata"]["profile_requested"] == "default"
+    assert payload["run_metadata"]["profile_resolved"] == "local-explore"
+    assert len(payload["run_metadata"]["fixtures_fingerprint_sha256"]) == 64
 
     states = [row["state"] for row in payload["results"]]
     assert states == ["PROVED", "UNPROVED_TIMEOUT", "REFUTED"]
+    assert all(len(row["source_sha256"]) == 64 for row in payload["results"])
 
 
 def test_batch_report_defaults_to_output_dir(monkeypatch, tmp_path) -> None:
@@ -192,6 +197,40 @@ def test_batch_report_includes_profile_and_strict_mode(monkeypatch, tmp_path) ->
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["summary"]["profile"] == "ci-strict"
     assert payload["summary"]["strict_mode"] is True
+    assert payload["run_metadata"]["profile_requested"] == "ci-strict"
+    assert payload["run_metadata"]["profile_resolved"] == "ci-strict"
+
+
+def test_batch_profile_alias_trusted_resolves_to_ci_strict(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    report_path = tmp_path / "alias_report.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "trusted",
+            "--report",
+            "--report-path",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["profile"] == "ci-strict"
+    assert payload["summary"]["strict_mode"] is True
+    assert payload["run_metadata"]["profile_requested"] == "trusted"
+    assert payload["run_metadata"]["profile_resolved"] == "ci-strict"
 
 
 def test_batch_strict_flag_overrides_profile_strictness(monkeypatch, tmp_path) -> None:
