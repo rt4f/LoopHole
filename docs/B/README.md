@@ -30,13 +30,32 @@ This folder contains all documentation for Person B's parallel execution lane in
 | [10_stablehlo_emitter_hooks_sync.md](10_stablehlo_emitter_hooks_sync.md) | B-09: Add emitter hooks for new StableHLO operations | Done |
 | [11_fixture_realism_stress_coverage.md](11_fixture_realism_stress_coverage.md) | B-10: Expand fixture realism for parser and emitter stress testing | Done |
 
-Future docs will be added to this folder as B-11 through B-12 tasks are executed.
+### Phase 4: Corpus Compatibility and Diagnostics Closure
+
+| Doc | Task | Status |
+|---|---|---|
+| [12_realworld_mlir_corpus_parser_compatibility.md](12_realworld_mlir_corpus_parser_compatibility.md) | B-11: Real-world MLIR corpus parser compatibility pass | Done |
+| [13_unsupported_form_diagnostics_closure.md](13_unsupported_form_diagnostics_closure.md) | B-12: Unsupported-form diagnostics closure for corpus misses | Done |
+
+### Phase 5: Emitter Consistency Pass
+
+| Doc | Task | Status |
+|---|---|---|
+| [15_emitter_validation_consistency_pass.md](15_emitter_validation_consistency_pass.md) | B-13: Emitter validation consistency pass | Done |
+
+### Phase 6: Trusted Lane Enforcement
+
+| Doc | Task | Status |
+|---|---|---|
+| [14_trusted_lane_artifact_verification_enforcement_ci.md](14_trusted_lane_artifact_verification_enforcement_ci.md) | B-14: Trusted-lane artifact verification enforcement in CI | Done |
+
+Future docs will be added to this folder as B-15 and B-16 tasks are executed.
 
 ## Quick Reference
 
-**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration)  
-**Current focus:** Ready for B-11  
-**Test status:** 232 passing, 1 skipped  
+**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration), B-11 (real-world MLIR corpus parser compatibility pass), B-12 (unsupported-form diagnostics closure for corpus misses), B-13 (emitter validation consistency pass), B-14 (trusted-lane artifact verification enforcement in CI)  
+**Current focus:** Ready for B-15 dynamic-memref hardening  
+**Test status:** 252 passing, 1 skipped  
 **Demo status:** CLI 7/10 proved, 3 partial; standalone script has stale field reference  
 
 See individual docs for detailed audit tables, disposition mappings, and implementation details.

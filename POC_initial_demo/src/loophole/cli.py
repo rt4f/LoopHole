@@ -79,6 +79,10 @@ CANONICAL_STABLEHLO_SKETCHES = {
 }
 
 
+def _requires_trusted_artifact_validation(profile_name: str) -> bool:
+    return profile_name == "ci-strict"
+
+
 def _validate_verify_policy(*, no_verify: bool, strict: bool, profile: str) -> None:
     """Reject incompatible strict/no-verify combinations before invoking the lifter."""
     if not no_verify:
@@ -914,6 +918,13 @@ def batch(
 
     resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
     effective_strict = strict or resolved_profile.strict_mode
+    trusted_validation_required = _requires_trusted_artifact_validation(resolved_profile.name)
+
+    if trusted_validation_required and not validate_emitted:
+        console.print(
+            "[dim]Trusted lane profile detected; enabling mandatory emitted artifact validation.[/dim]"
+        )
+        validate_emitted = True
 
     lifter = Lifter.from_policy_profile(
         target=target,
@@ -937,10 +948,16 @@ def batch(
     if validate_emitted:
         verifier_cmd = find_mlir_verifier(mlir_verifier)
         if not verifier_cmd:
-            console.print(
-                "[red]Batch emitted MLIR validation requested, but no verifier command was found. "
-                "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
-            )
+            if trusted_validation_required:
+                console.print(
+                    "[red]Trusted lane requires emitted MLIR validation, but no verifier command was found. "
+                    "Install mlir-opt (or variant) or set --mlir-verifier / LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+                )
+            else:
+                console.print(
+                    "[red]Batch emitted MLIR validation requested, but no verifier command was found. "
+                    "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+                )
             sys.exit(1)
 
     table = Table(title=f"Batch Lift Results: {input_dir}", show_header=True)
@@ -993,12 +1010,13 @@ def batch(
                 displayed_rows += 1
 
             emitted_path = None
-            if write_emitted and result.emitted_mlir:
-                rel_source_path = mlir_file.relative_to(in_path)
-                out_file = out_path / rel_source_path.parent / f"{rel_source_path.stem}_lifted.mlir"
-                out_file.parent.mkdir(parents=True, exist_ok=True)
-                out_file.write_text(result.emitted_mlir, encoding="utf-8")
-                emitted_path = str(out_file)
+            if result.emitted_mlir:
+                if write_emitted:
+                    rel_source_path = mlir_file.relative_to(in_path)
+                    out_file = out_path / rel_source_path.parent / f"{rel_source_path.stem}_lifted.mlir"
+                    out_file.parent.mkdir(parents=True, exist_ok=True)
+                    out_file.write_text(result.emitted_mlir, encoding="utf-8")
+                    emitted_path = str(out_file)
 
                 if validate_emitted and verifier_cmd:
                     validation = validate_mlir_artifact(result.emitted_mlir, verifier_cmd)
@@ -1146,6 +1164,8 @@ def batch(
                 "accepted_loose": sum(1 for r in results if r["accepted_loose"]),
                 "accepted_strict": sum(1 for r in results if r["accepted_strict"]),
                 "write_emitted": write_emitted,
+                "validate_emitted": validate_emitted,
+                "validation_failures": validation_failed,
             },
             "canonical_stablehlo_summary": canonical_summary,
             "slowest": [

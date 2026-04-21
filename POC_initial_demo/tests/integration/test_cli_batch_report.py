@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from loophole.cli import main
 from loophole.lifter import LiftResult
+from loophole.mlir_validator import MlirValidationResult
 from loophole.z3_checker import CheckResult, VerificationReport
 
 
@@ -364,3 +365,96 @@ def test_batch_no_write_emitted_keeps_output_clean(monkeypatch, tmp_path) -> Non
 
     assert result.exit_code == 0
     assert list(output_dir.rglob("*_lifted.mlir")) == []
+
+
+def test_trusted_batch_requires_validation_even_without_flag(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    validations: list[str] = []
+
+    def _fake_validate(mlir_text: str, verifier_cmd: str, timeout_sec: int = 15) -> MlirValidationResult:
+        validations.append(verifier_cmd)
+        return MlirValidationResult(ok=True, command=verifier_cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+    monkeypatch.setattr("loophole.cli.find_mlir_verifier", lambda _cmd=None: "mock-mlir-opt")
+    monkeypatch.setattr("loophole.cli.validate_mlir_artifact", _fake_validate)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "ci-strict",
+            "--no-write-emitted",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert validations == ["mock-mlir-opt"]
+
+
+def test_trusted_batch_fails_when_verifier_missing(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+    monkeypatch.setattr("loophole.cli.find_mlir_verifier", lambda _cmd=None: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "trusted",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Trusted lane requires emitted MLIR validation" in result.output
+
+
+def test_trusted_batch_fails_on_invalid_artifact(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    def _fake_validate(_mlir_text: str, verifier_cmd: str, timeout_sec: int = 15) -> MlirValidationResult:
+        return MlirValidationResult(
+            ok=False,
+            command=verifier_cmd,
+            returncode=1,
+            stdout="",
+            stderr="invalid mlir",
+        )
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+    monkeypatch.setattr("loophole.cli.find_mlir_verifier", lambda _cmd=None: "mock-mlir-opt")
+    monkeypatch.setattr("loophole.cli.validate_mlir_artifact", _fake_validate)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--profile",
+            "ci-strict",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Validation failed" in result.output
