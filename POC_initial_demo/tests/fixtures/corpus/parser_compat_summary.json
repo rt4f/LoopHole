@@ -1,0 +1,80 @@
+{
+  "root": "C:\\Users\\ADMIN\\Desktop\\LoopHole\\POC_initial_demo\\tests\\fixtures\\corpus",
+  "total_files": 6,
+  "compatible_files": 2,
+  "incompatible_files": 4,
+  "class_frequency": {
+    "no_loop_construct_detected": 2,
+    "no_store_detected": 2,
+    "affine_apply_index_materialization": 1,
+    "conditional_region_not_modeled": 1,
+    "scf_iter_args_not_modeled": 1
+  },
+  "files": [
+    {
+      "file_path": "frontend_no_loop_vectorized.mlir",
+      "compatible": false,
+      "classes": [
+        "no_loop_construct_detected",
+        "no_store_detected"
+      ],
+      "diagnostics_count": 3,
+      "loop_count": 0,
+      "read_count": 0,
+      "write_count": 0
+    },
+    {
+      "file_path": "polygeist_affine_apply_indices.mlir",
+      "compatible": false,
+      "classes": [
+        "affine_apply_index_materialization"
+      ],
+      "diagnostics_count": 1,
+      "loop_count": 1,
+      "read_count": 1,
+      "write_count": 1
+    },
+    {
+      "file_path": "polygeist_conv1d_scf.mlir",
+      "compatible": true,
+      "classes": [],
+      "diagnostics_count": 0,
+      "loop_count": 2,
+      "read_count": 3,
+      "write_count": 1
+    },
+    {
+      "file_path": "polygeist_dot_iter_args.mlir",
+      "compatible": false,
+      "classes": [
+        "no_loop_construct_detected",
+        "no_store_detected",
+        "scf_iter_args_not_modeled"
+      ],
+      "diagnostics_count": 4,
+      "loop_count": 0,
+      "read_count": 2,
+      "write_count": 0
+    },
+    {
+      "file_path": "polygeist_if_guarded_store.mlir",
+      "compatible": false,
+      "classes": [
+        "conditional_region_not_modeled"
+      ],
+      "diagnostics_count": 1,
+      "loop_count": 1,
+      "read_count": 1,
+      "write_count": 1
+    },
+    {
+      "file_path": "polygeist_matmul_affine.mlir",
+      "compatible": true,
+      "classes": [],
+      "diagnostics_count": 0,
+      "loop_count": 3,
+      "read_count": 3,
+      "write_count": 1
+    }
+  ]
+}
