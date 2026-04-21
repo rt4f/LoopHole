@@ -74,10 +74,14 @@ class TestZ3Verification:
 
     def test_matmul_not_equiv_to_elementwise(self, extractor, checker):
         info = extractor.extract(MATMUL_MLIR)
-        elem_sketches = [s for n, s in SKETCH_BY_NAME.items() if "elementwise_add" in n]
-        if not elem_sketches:
-            pytest.skip("No elementwise_add sketch available")
-        report = checker.check(info, elem_sketches[0])
+        sketch = SKETCH_BY_NAME.get("linalg.map{arith.addf}")
+        if sketch is None:
+            # Backward-compatible fallback for alternative naming conventions.
+            elem_sketches = [s for n, s in SKETCH_BY_NAME.items() if "add" in n.lower()]
+            assert elem_sketches, "No elementwise add sketch available"
+            sketch = elem_sketches[0]
+
+        report = checker.check(info, sketch)
         # Should either be NOT_EQUIVALENT, STRUCTURAL_MISMATCH, or similar non-EQUIVALENT
         assert report.result != CheckResult.EQUIVALENT, \
             "matmul should NOT be equivalent to elementwise_add"

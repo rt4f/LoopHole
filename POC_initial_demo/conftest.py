@@ -19,7 +19,7 @@ from loophole.tests.fixtures import (
     ELEMENTWISE_ADD_MLIR,
     REDUCE_SUM_MLIR,
 )
-from loophole.mlir_validator import find_mlir_verifier
+from loophole.mlir_validator import find_mlir_verifier, is_internal_mlir_verifier
 
 # ---------------------------------------------------------------------------
 # Fixture file directory
@@ -152,11 +152,13 @@ def mlir_verifier_cmd() -> str:
     """Resolve verifier command or skip unless strict CI mode requires it."""
     cmd = find_mlir_verifier()
     require = os.getenv("LOOPHOLE_REQUIRE_MLIR_VERIFY", "0").strip() in {"1", "true", "TRUE", "yes"}
-    if cmd:
+    if cmd and not (require and is_internal_mlir_verifier(cmd)):
         return cmd
     if require:
         pytest.fail(
             "LOOPHOLE_REQUIRE_MLIR_VERIFY is set, but no MLIR verifier command was found on PATH "
-            "(tried LOOPHOLE_MLIR_VERIFY_CMD, mlir-opt, mlir-opt-18, mlir-opt-17)."
+            "(tried LOOPHOLE_MLIR_VERIFY_CMD, mlir-opt, mlir-opt-18, mlir-opt-17, and Docker image verifier)."
         )
+    if cmd:
+        return cmd
     pytest.skip("No MLIR verifier command available on PATH; artifact validation skipped.")

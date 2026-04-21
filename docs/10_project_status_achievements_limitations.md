@@ -161,7 +161,7 @@ Evidence:
 |---|---|---|
 | Refuted outputs accepted as partial | Identified in [07](./07_poc_implementation_audit.md) | Mitigated by Team A semantics hardening; must still be made policy-default across every execution mode. |
 | Silent parser/emitter fallback behavior | Audited in Team B docs | Strongly mitigated through diagnostics and fail-fast work; continue closing remaining edge cases. |
-| Standalone demo script stale fields | Captured in [B/01](./B/01_baseline_report.md) | Treat as historical baseline issue; validate current script status in CI smoke path before release claims. |
+| Standalone demo script stale fields | Captured in [B/01](./B/01_baseline_report.md) | Historical issue; current standalone demo path is covered by integration smoke tests and strict-profile contract checks. Keep CI smoke as guardrail. |
 | Weak-kernel proof fragility | Documented in [A/04](./A/04_phase2_person_a_summary.md) | Better diagnosed and tested; still a targeted hardening area. |
 | StableHLO under-coverage | Documented in [07](./07_poc_implementation_audit.md) | Improved in [C/04](./C/04_phase3_stablehlo_coverage_expansion.md), not yet feature-complete parity. |
 

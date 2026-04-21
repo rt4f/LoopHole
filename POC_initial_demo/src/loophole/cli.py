@@ -247,6 +247,13 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
     if exc.stderr:
         lines.append("\n[bold]stderr:[/bold]")
         lines.append(exc.stderr.strip()[:2000])
+    stderr_lower = (exc.stderr or "").lower()
+    if "llvm.call" in stderr_lower and "printf" in stderr_lower:
+        lines.append(
+            "\n[bold]Hint:[/bold] Detected a vararg call path (for example printf) that this "
+            "Polygeist image cannot lower for full-program lifting. "
+            "Try [cyan]--function <kernel_name>[/cyan] to focus a pure compute kernel."
+        )
     console.print(Panel("\n".join(lines), title="cgeist failed", border_style="red"))
     sys.exit(2)
 
@@ -509,6 +516,8 @@ def _print_verification_report(v):
               help="Extra argument forwarded to cgeist/clang (repeatable)")
 @click.option("--cgeist-bin", default="cgeist", show_default=True,
               help="Path to cgeist executable")
+@click.option("--docker-image", default=None,
+              help="Optional Docker image for cgeist execution (auto-detect if omitted)")
 @click.option("--timeout-sec", type=int, default=60, show_default=True,
               help="cgeist subprocess timeout in seconds")
 @click.option("--verbose", "-v", is_flag=True, help="Print command details")
@@ -522,6 +531,7 @@ def cgeist_cmd(
     std: Optional[str],
     clang_arg: tuple[str, ...],
     cgeist_bin: str,
+    docker_image: Optional[str],
     timeout_sec: int,
     verbose: bool,
 ):
@@ -533,6 +543,8 @@ def cgeist_cmd(
         cgeist_bin=cgeist_bin,
         default_timeout_sec=timeout_sec,
         verbose=verbose,
+        docker_image=docker_image,
+        prefer_docker=True,
     )
     invocation = CgeistInvocation(
         source_files=list(source_files),
@@ -611,6 +623,8 @@ def cgeist_cmd(
               help="Extra argument forwarded to cgeist/clang (repeatable)")
 @click.option("--cgeist-bin", default="cgeist", show_default=True,
               help="Path to cgeist executable")
+@click.option("--docker-image", default=None,
+              help="Optional Docker image for cgeist execution (auto-detect if omitted)")
 @click.option("--timeout-sec", type=int, default=60, show_default=True,
               help="cgeist subprocess timeout in seconds")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
@@ -636,6 +650,7 @@ def lift_c_cmd(
     std: Optional[str],
     clang_arg: tuple[str, ...],
     cgeist_bin: str,
+    docker_image: Optional[str],
     timeout_sec: int,
     verbose: bool,
     validate_emitted: bool,
@@ -654,6 +669,8 @@ def lift_c_cmd(
         cgeist_bin=cgeist_bin,
         default_timeout_sec=timeout_sec,
         verbose=verbose,
+        docker_image=docker_image,
+        prefer_docker=True,
     )
     invocation = CgeistInvocation(
         source_files=list(source_files),
@@ -1181,8 +1198,20 @@ def sketches(dialect: str):
 @main.command()
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo"]),
               default="linalg", show_default=True)
+@click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
+              help="Policy profile used to set strictness/timeouts")
+@click.option("--z3-timeout", type=int, default=None,
+              help="Z3 solver timeout per check in milliseconds (default: profile value)")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved results")
 @click.option("--verbose", "-v", is_flag=True)
-def demo(target: str, verbose: bool):
+def demo(
+    target: str,
+    profile: str,
+    z3_timeout: Optional[int],
+    strict: bool,
+    verbose: bool,
+):
     """
     Run the built-in demo: lift canonical examples (matmul, transpose, conv1d, conv2d).
 
@@ -1190,14 +1219,26 @@ def demo(target: str, verbose: bool):
     """
     from loophole.tests.fixtures import DEMO_FIXTURES
 
+    resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
+    effective_strict = strict or resolved_profile.strict_mode
+
+    lifter = Lifter.from_policy_profile(
+        target=target,
+        profile_name=profile,
+        z3_timeout_ms=z3_timeout,
+        strict_mode=True if strict else None,
+        verbose=verbose,
+    )
+
     console.print(Panel(
         "[bold cyan]LoopHole POC Demo[/bold cyan]\n"
         "Lifting canonical scalar loop nests into MLIR tensor operations\n"
-        f"Target dialect: [magenta]{target}[/magenta]",
+        f"Target dialect: [magenta]{target}[/magenta]\n"
+        f"Policy profile: [magenta]{resolved_profile.name}[/magenta] | "
+        f"Strict mode: [magenta]{'on' if effective_strict else 'off'}[/magenta] | "
+        f"Z3 timeout: [magenta]{lifter.z3_timeout_ms} ms[/magenta]",
         border_style="cyan",
     ))
-
-    lifter = Lifter(target=target, z3_timeout_ms=15_000, verbose=verbose)
     results_data = []
 
     for fixture_name, mlir_text in DEMO_FIXTURES.items():
@@ -1284,6 +1325,9 @@ def demo(target: str, verbose: bool):
         f"[yellow]{unproved_timeout} unproved (timeout/unknown)[/yellow] | "
         f"[red]{refuted} refuted[/red]"
     )
+
+    if effective_strict and (unproved_timeout > 0 or refuted > 0):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

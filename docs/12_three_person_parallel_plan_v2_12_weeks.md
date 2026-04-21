@@ -256,3 +256,23 @@ Operations metrics:
 
 Related strategy document:
 - [11 - Future Plan and Improvement Strategy](./11_future_plan_and_improvements.md)
+
+---
+
+## 12.10 Sprint 1 Execution Snapshot (2026-04-17)
+
+This section records execution evidence for Sprint 1 gate tracking.
+
+Person A status:
+1. A-11 complete: strict-profile contract behavior is validated across lift, lift-c, batch, and demo surfaces.
+2. A-12 Sprint 1 scope complete: week-1 baseline artifacts generated for both linalg and stablehlo targets with fixed timeout (10000 ms).
+3. Lane summary artifact published: [docs/A/05_sprint1_a11_a12_closure.md](./A/05_sprint1_a11_a12_closure.md).
+
+Generated baseline artifacts:
+1. [A/baselines/sprint1_week1_linalg_20260417.json](./A/baselines/sprint1_week1_linalg_20260417.json)
+2. [A/baselines/sprint1_week1_stablehlo_20260417.json](./A/baselines/sprint1_week1_stablehlo_20260417.json)
+
+G1 status update (partial):
+1. Trusted profile rejects refuted outputs: done for Person A lane.
+2. Required artifact verification runs in CI: pending Person B B-14 final sign-off.
+3. Baseline week-1 metrics report committed: Person A baseline snapshots complete; Person C dashboard hardening remains gate dependency.

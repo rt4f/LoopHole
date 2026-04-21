@@ -18,6 +18,12 @@ This folder contains documentation for Person A work in the three-person paralle
 |---|---|---|
 | [04_phase2_person_a_summary.md](04_phase2_person_a_summary.md) | A-06 through A-10 implementation, diagnostics, and validation | Done |
 
+### Sprint 1 (12-Week Plan V2): Trust Gate Consolidation
+
+| Doc | Task | Status |
+|---|---|---|
+| [05_sprint1_a11_a12_closure.md](05_sprint1_a11_a12_closure.md) | A-11 contract parity and A-12 week-1 dual-target baseline evidence | Done |
+
 ## Scope Clarification
 
 Person A scope for Phase 1:

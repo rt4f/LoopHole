@@ -13,6 +13,13 @@ from loophole.lifter import LiftResult
 from loophole.z3_checker import CheckResult, VerificationReport
 
 
+def _set_single_demo_fixture(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "loophole.tests.fixtures.DEMO_FIXTURES",
+        {"demo_kernel": "func.func @demo_kernel() { return }"},
+    )
+
+
 def _make_lift_result(
     check_result: CheckResult,
     *,
@@ -182,3 +189,63 @@ def test_env_profile_applies_when_cli_profile_is_default(monkeypatch, tmp_path) 
     result = runner.invoke(main, ["lift", str(input_file)])
 
     assert result.exit_code == 2
+
+
+def test_demo_strict_exit_code_is_zero_for_proved(monkeypatch) -> None:
+    _set_single_demo_fixture(monkeypatch)
+    proved = _make_lift_result(CheckResult.EQUIVALENT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return proved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["demo", "--strict"])
+
+    assert result.exit_code == 0
+
+
+def test_demo_strict_exit_code_is_one_for_unproved_timeout(monkeypatch) -> None:
+    _set_single_demo_fixture(monkeypatch)
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["demo", "--strict"])
+
+    assert result.exit_code == 1
+
+
+def test_demo_ci_strict_profile_rejects_unproved_timeout(monkeypatch) -> None:
+    _set_single_demo_fixture(monkeypatch)
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["demo", "--profile", "ci-strict"])
+
+    assert result.exit_code == 1
+
+
+def test_demo_local_explore_profile_allows_unproved_timeout(monkeypatch) -> None:
+    _set_single_demo_fixture(monkeypatch)
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["demo", "--profile", "local-explore"])
+
+    assert result.exit_code == 0

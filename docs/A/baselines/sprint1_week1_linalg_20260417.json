@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "captured_at_utc": "2026-04-17T14:59:18.596865+00:00",
+  "label": "sprint1_week1_linalg",
+  "target": "linalg",
+  "z3_timeout_ms": 10000,
+  "fixtures_dir": "POC_initial_demo/tests/fixtures",
+  "summary": {
+    "total_kernels": 7,
+    "proved": 7,
+    "unproved_timeout": 0,
+    "refuted": 0,
+    "accepted_loose": 7,
+    "accepted_strict": 7,
+    "avg_elapsed_ms": 9.345071427170685
+  },
+  "kernels": [
+    {
+      "file_name": "conv1d.mlir",
+      "sketch": "linalg.conv_1d_ncw_fcw",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "conv2d.mlir",
+      "sketch": "linalg.conv_2d",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "dot_product.mlir",
+      "sketch": "linalg.dot",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "elementwise_add.mlir",
+      "sketch": "linalg.map{arith.addf}",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "matmul.mlir",
+      "sketch": "linalg.matmul",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "reduce_sum.mlir",
+      "sketch": "linalg.reduce{arith.addf}_rowsum",
+      "state": "PROVED",
+      "accepted_strict": true
+    },
+    {
+      "file_name": "transpose.mlir",
+      "sketch": "linalg.transpose",
+      "state": "PROVED",
+      "accepted_strict": true
+    }
+  ]
+}

@@ -107,3 +107,77 @@ def test_generate_mlir_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
         frontend.generate_mlir(invocation)
 
     assert "timed out" in str(exc_info.value)
+
+
+def test_generate_mlir_falls_back_to_docker_when_binary_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frontend = PolygeistFrontend(cgeist_bin="missing-cgeist")
+    invocation = CgeistInvocation(source_files=["kernel.c"], language="c")
+
+    monkeypatch.setattr(frontend, "_docker_available", lambda: True)
+    monkeypatch.setattr(frontend, "_resolve_docker_image", lambda: "ghcr.io/schizoid-man/loophole-polygeist:llvm17")
+    monkeypatch.setattr(
+        frontend,
+        "_build_docker_command",
+        lambda *_args, **_kwargs: (["docker", "run", "image", "cgeist"], None),
+    )
+
+    calls = []
+
+    def fake_run(command, *args, **kwargs):
+        calls.append(command)
+        if command[0] == "missing-cgeist":
+            raise FileNotFoundError("missing cgeist")
+        return SimpleNamespace(returncode=0, stdout="module {\n}\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = frontend.generate_mlir(invocation)
+
+    assert calls[0][0] == "missing-cgeist"
+    assert calls[1][0] == "docker"
+    assert result.command[0] == "docker"
+    assert result.mlir_text.strip().startswith("module")
+
+
+def test_generate_mlir_prefers_docker_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    frontend = PolygeistFrontend(cgeist_bin="mock-cgeist", prefer_docker=True)
+    invocation = CgeistInvocation(source_files=["kernel.c"], language="c")
+
+    monkeypatch.setattr(frontend, "_docker_available", lambda: True)
+    monkeypatch.setattr(frontend, "_resolve_docker_image", lambda: "ghcr.io/schizoid-man/loophole-polygeist:llvm17")
+    monkeypatch.setattr(
+        frontend,
+        "_build_docker_command",
+        lambda *_args, **_kwargs: (["docker", "run", "image", "cgeist"], None),
+    )
+
+    def fake_run(command, *args, **kwargs):
+        if command[0] == "mock-cgeist":
+            pytest.fail("Host cgeist command should not run when prefer_docker=True and Docker is available")
+        return SimpleNamespace(returncode=0, stdout="module {\n}\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = frontend.generate_mlir(invocation)
+
+    assert result.command[0] == "docker"
+    assert result.mlir_text.strip().startswith("module")
+
+
+def test_generate_mlir_binary_not_found_without_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    frontend = PolygeistFrontend(cgeist_bin="missing-cgeist")
+    invocation = CgeistInvocation(source_files=["kernel.c"], language="c")
+
+    monkeypatch.setattr(frontend, "_docker_available", lambda: False)
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("missing cgeist")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(PolygeistFrontendError) as exc_info:
+        frontend.generate_mlir(invocation)
+
+    assert "cgeist binary not found" in str(exc_info.value)

@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "captured_at_utc": "2026-04-17T14:59:19.031199+00:00",
+  "label": "sprint1_week1_stablehlo",
+  "target": "stablehlo",
+  "z3_timeout_ms": 10000,
+  "fixtures_dir": "POC_initial_demo/tests/fixtures",
+  "summary": {
+    "total_kernels": 7,
+    "proved": 5,
+    "unproved_timeout": 0,
+    "refuted": 2,
+    "accepted_loose": 5,
+    "accepted_strict": 5,
+    "avg_elapsed_ms": 8.746728571298133
+  },
+  "kernels": [
+    {
+      "file_name": "conv1d.mlir",
+      "sketch": null,
+      "state": "REFUTED",
+      "accepted_strict": false,
+      "error": "All 1 candidates failed Z3 verification."
+    },
+    {
+      "file_name": "conv2d.mlir",
+      "sketch": null,
+      "state": "REFUTED",
+      "accepted_strict": false,
+      "error": "No sketch candidates passed structural pre-filter."
+    },
+    {
+      "file_name": "dot_product.mlir",
+      "sketch": "stablehlo.dot_general_vecdot",
+      "state": "PROVED",
+      "accepted_strict": true,
+      "error": null
+    },
+    {
+      "file_name": "elementwise_add.mlir",
+      "sketch": "stablehlo.add",
+      "state": "PROVED",
+      "accepted_strict": true,
+      "error": null
+    },
+    {
+      "file_name": "matmul.mlir",
+      "sketch": "stablehlo.dot_general",
+      "state": "PROVED",
+      "accepted_strict": true,
+      "error": null
+    },
+    {
+      "file_name": "reduce_sum.mlir",
+      "sketch": "stablehlo.reduce{add}",
+      "state": "PROVED",
+      "accepted_strict": true,
+      "error": null
+    },
+    {
+      "file_name": "transpose.mlir",
+      "sketch": "stablehlo.transpose",
+      "state": "PROVED",
+      "accepted_strict": true,
+      "error": null
+    }
+  ]
+}

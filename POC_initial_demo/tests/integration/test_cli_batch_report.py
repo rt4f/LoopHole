@@ -225,6 +225,35 @@ def test_batch_strict_flag_overrides_profile_strictness(monkeypatch, tmp_path) -
     assert captured["strict_mode"] is True
 
 
+def test_batch_strict_exits_nonzero_for_unproved_timeout(monkeypatch, tmp_path) -> None:
+    (tmp_path / "kernel.mlir").write_text("func.func @dummy() { return }", encoding="utf-8")
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    report_path = tmp_path / "strict_report.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "batch",
+            str(tmp_path),
+            "--strict",
+            "--report",
+            "--report-path",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["strict_mode"] is True
+    assert payload["summary"]["unproved_timeout"] == 1
+
+
 def test_batch_selection_filters_and_limits_are_reported(monkeypatch, tmp_path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
