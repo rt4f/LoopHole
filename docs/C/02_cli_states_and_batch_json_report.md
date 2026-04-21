@@ -19,12 +19,16 @@ This state vocabulary is now applied consistently in:
 `loophole batch --report` writes JSON with a stable top-level schema:
 
 - `schema_version`
+- `compatible_schema_versions`
 - `generated_at_utc`
 - `input_dir`
 - `output_dir`
 - `target`
 - `z3_timeout_ms`
+- `run_metadata`
+- `selection`
 - `summary`
+- `canonical_stablehlo_summary`
 - `results`
 
 `summary` includes:
@@ -32,6 +36,21 @@ This state vocabulary is now applied consistently in:
 - total files,
 - counts for PROVED / UNPROVED_TIMEOUT / REFUTED,
 - accepted counts under loose and strict policies.
+
+`run_metadata` includes reproducibility context:
+
+- profile requested and resolved,
+- strict-mode requested and effective flags,
+- fixture fingerprint hash,
+- python/platform/tool version fields,
+- docker image tag (when provided).
+
+`canonical_stablehlo_summary` includes:
+
+- required canonical op list,
+- observed and missing canonical ops,
+- proved/unproved/refuted counts on canonical-matched results,
+- unmatched canonical candidate files.
 
 Each `results` item includes:
 
@@ -44,6 +63,12 @@ Each `results` item includes:
 - elapsed time,
 - error text (if any),
 - emitted output file path (if written).
+- source SHA256 for reproducible reruns.
+
+Compatibility note:
+
+- New reports use schema `1.1`.
+- `compatible_schema_versions` includes `1.0` for migration tooling.
 
 ## Usage
 

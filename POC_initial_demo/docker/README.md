@@ -77,6 +77,17 @@ Or StableHLO:
 loophole lift path/to/kernel.mlir --target stablehlo -o path/to/kernel_stablehlo.mlir
 ```
 
+## Docker-First Report Helpers
+
+For MLIR-related reporting without local MLIR install, use helper scripts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File POC_initial_demo/scripts/run_batch_report_in_docker.ps1 -Target stablehlo -Profile trusted
+powershell -ExecutionPolicy Bypass -File POC_initial_demo/scripts/run_weekly_report_in_docker.ps1 -Target stablehlo -Label week_01
+```
+
+These wrappers mount the repository into the container and execute report flows inside the Docker image.
+
 ## Notes
 
 - The `compile` command mounts the common root of input/output paths into the container and writes output directly on the host.

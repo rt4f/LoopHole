@@ -151,12 +151,15 @@ def dot_product_loop_info():
 def mlir_verifier_cmd() -> str:
     """Resolve verifier command or skip unless strict CI mode requires it."""
     cmd = find_mlir_verifier()
-    require = os.getenv("LOOPHOLE_REQUIRE_MLIR_VERIFY", "0").strip() in {"1", "true", "TRUE", "yes"}
+    require_flag = os.getenv("LOOPHOLE_REQUIRE_MLIR_VERIFY", "0").strip() in {"1", "true", "TRUE", "yes"}
+    profile_env = os.getenv("LOOPHOLE_POLICY_PROFILE", "").strip().lower()
+    require_from_profile = profile_env in {"ci-strict", "trusted"}
+    require = require_flag or require_from_profile
     if cmd and not (require and is_internal_mlir_verifier(cmd)):
         return cmd
     if require:
         pytest.fail(
-            "LOOPHOLE_REQUIRE_MLIR_VERIFY is set, but no MLIR verifier command was found on PATH "
+            "Trusted artifact verification is required, but no external MLIR verifier command was found on PATH "
             "(tried LOOPHOLE_MLIR_VERIFY_CMD, mlir-opt, mlir-opt-18, mlir-opt-17, and Docker image verifier)."
         )
     if cmd:

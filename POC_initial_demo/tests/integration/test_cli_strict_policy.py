@@ -174,6 +174,38 @@ def test_local_explore_profile_timeout_returns_exit_code_zero(monkeypatch, tmp_p
     assert result.exit_code == 0
 
 
+def test_trusted_alias_timeout_returns_strict_exit_code_two(monkeypatch, tmp_path) -> None:
+    input_file = tmp_path / "input.mlir"
+    input_file.write_text("func.func @dummy() { return }", encoding="utf-8")
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["lift", str(input_file), "--profile", "trusted"])
+
+    assert result.exit_code == 2
+
+
+def test_exploratory_alias_timeout_returns_exit_code_zero(monkeypatch, tmp_path) -> None:
+    input_file = tmp_path / "input.mlir"
+    input_file.write_text("func.func @dummy() { return }", encoding="utf-8")
+    unproved = _make_lift_result(CheckResult.TIMEOUT, emitted_mlir=True)
+
+    def _fake_lift(_self, _src: str) -> LiftResult:
+        return unproved
+
+    monkeypatch.setattr("loophole.cli.Lifter.lift", _fake_lift)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["lift", str(input_file), "--profile", "exploratory"])
+
+    assert result.exit_code == 0
+
+
 def test_env_profile_applies_when_cli_profile_is_default(monkeypatch, tmp_path) -> None:
     input_file = tmp_path / "input.mlir"
     input_file.write_text("func.func @dummy() { return }", encoding="utf-8")

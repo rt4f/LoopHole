@@ -28,7 +28,14 @@ Batch runs now align with policy-profile semantics and strict acceptance reporti
 - `--strict`
 - `--report-path`
 
+Phase 4 extension:
+
+- profile aliases `trusted` and `exploratory` are accepted and resolve to canonical profiles.
+- reports now preserve both requested and resolved profile names under `run_metadata`.
+
 Report summaries now include profile and strictness context, accepted counts, and filter metadata, which improves reproducibility when sharing results.
+
+Additional reproducibility metadata now includes fixture fingerprint hash and per-file source hash in report payloads.
 
 ### 3) Artifact output layout and throughput ergonomics
 

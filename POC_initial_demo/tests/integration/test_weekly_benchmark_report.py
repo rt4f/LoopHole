@@ -60,9 +60,12 @@ def test_generate_report_includes_schema_and_summary(monkeypatch, tmp_path) -> N
         target="linalg",
         z3_timeout_ms=10_000,
         label="sprint1_week1",
+        baseline_payload=None,
+        regression_threshold_fraction=0.05,
+        docker_image=None,
     )
 
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
     assert payload["label"] == "sprint1_week1"
     assert payload["target"] == "linalg"
     assert payload["summary"]["total_kernels"] == 2
@@ -93,6 +96,9 @@ def test_write_reports_writes_json_and_markdown(monkeypatch, tmp_path) -> None:
         target="stablehlo",
         z3_timeout_ms=10_000,
         label="stablehlo_week1",
+        baseline_payload=None,
+        regression_threshold_fraction=0.05,
+        docker_image=None,
     )
 
     paths = write_reports(payload, tmp_path / "out")
@@ -101,7 +107,7 @@ def test_write_reports_writes_json_and_markdown(monkeypatch, tmp_path) -> None:
     assert paths["markdown"].exists()
 
     persisted_payload = json.loads(paths["json"].read_text(encoding="utf-8"))
-    assert persisted_payload["schema_version"] == "1.0"
+    assert persisted_payload["schema_version"] == "1.1"
     markdown = paths["markdown"].read_text(encoding="utf-8")
     assert "# Weekly Benchmark Report" in markdown
     assert "stablehlo_week1" in markdown
@@ -117,4 +123,7 @@ def test_generate_report_raises_for_empty_fixture_dir(tmp_path) -> None:
             target="linalg",
             z3_timeout_ms=10_000,
             label="empty",
+            baseline_payload=None,
+            regression_threshold_fraction=0.05,
+            docker_image=None,
         )

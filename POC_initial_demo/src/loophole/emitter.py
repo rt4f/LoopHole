@@ -77,6 +77,16 @@ def _map_elem_type(etype: str) -> str:
     return mapping.get(etype, etype)
 
 
+def _require_element_type(loop: LoopNestInfo, op_name: str) -> str:
+    et = (loop.element_type or "").strip()
+    if not et:
+        raise EmissionError(
+            f"Missing element type metadata for '{op_name}'. "
+            "Emission requires explicit tensor_types/element_type from extraction."
+        )
+    return et
+
+
 def _require_output_tensor(loop: LoopNestInfo, op_name: str) -> str:
     out = loop.output_tensor
     if not out:
@@ -274,6 +284,8 @@ class LinalgEmitter:
     }
 
     def _validate_required_metadata(self, sketch: OperationSketch, loop: LoopNestInfo) -> None:
+        _require_element_type(loop, sketch.name)
+
         if not loop.tensor_shapes:
             raise EmissionError(
                 f"Missing tensor_shapes metadata for '{sketch.name}'. "
@@ -335,14 +347,13 @@ class LinalgEmitter:
     def _emit_matmul(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%C'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        B_name = input_tensors[1] if len(input_tensors) > 1 else '%B'
-        A_shape = shapes.get(A_name, [4, 4])
-        B_shape = shapes.get(B_name, [4, 4])
-        C_shape = shapes.get(out, [A_shape[0], B_shape[1]])
+        A_shape = _require_shape(shapes, A_name, sketch.name, expected_rank=2)
+        B_shape = _require_shape(shapes, B_name, sketch.name, expected_rank=2)
+        C_shape = _require_shape(shapes, out, sketch.name, expected_rank=2)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -444,18 +455,17 @@ class LinalgEmitter:
     def _emit_dot(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%c'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        B_name = input_tensors[1] if len(input_tensors) > 1 else '%B'
-        A_shape = shapes.get(A_name, [16])
-        B_shape = shapes.get(B_name, [16])
-        C_shape = shapes.get(out, [])
+        A_shape = _require_shape(shapes, A_name, sketch.name, expected_rank=1)
+        B_shape = _require_shape(shapes, B_name, sketch.name, expected_rank=1)
+        C_shape = _require_shape(shapes, out, sketch.name, expected_rank=1)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
-        C_type = _memref_type(C_shape if C_shape else [1], et)
+        C_type = _memref_type(C_shape, et)
 
         return (
             f"  func.func @{name}(%A: {A_type}, %B: {B_type}, %c: {C_type}) {{\n"
@@ -469,14 +479,13 @@ class LinalgEmitter:
     def _emit_matvec(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%y'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        x_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        x_name = input_tensors[1] if len(input_tensors) > 1 else '%x'
-        A_shape = shapes.get(A_name, [8, 8])
-        x_shape = shapes.get(x_name, [A_shape[1]])
-        y_shape = shapes.get(out, [A_shape[0]])
+        A_shape = _require_shape(shapes, A_name, sketch.name, expected_rank=2)
+        x_shape = _require_shape(shapes, x_name, sketch.name, expected_rank=1)
+        y_shape = _require_shape(shapes, out, sketch.name, expected_rank=1)
 
         A_type = _memref_type(A_shape, et)
         x_type = _memref_type(x_shape, et)
@@ -494,14 +503,13 @@ class LinalgEmitter:
     def _emit_vecmat(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%y'
+        x_name = _require_input_tensor(loop, sketch.name, 0)
+        A_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        x_name = input_tensors[0] if len(input_tensors) > 0 else '%x'
-        A_name = input_tensors[1] if len(input_tensors) > 1 else '%A'
-        x_shape = shapes.get(x_name, [8])
-        A_shape = shapes.get(A_name, [8, 8])
-        y_shape = shapes.get(out, [A_shape[1]])
+        x_shape = _require_shape(shapes, x_name, sketch.name, expected_rank=1)
+        A_shape = _require_shape(shapes, A_name, sketch.name, expected_rank=2)
+        y_shape = _require_shape(shapes, out, sketch.name, expected_rank=1)
 
         x_type = _memref_type(x_shape, et)
         A_type = _memref_type(A_shape, et)
@@ -519,14 +527,13 @@ class LinalgEmitter:
     def _emit_batch_matmul(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%C'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        B_name = input_tensors[1] if len(input_tensors) > 1 else '%B'
-        A_shape = shapes.get(A_name, [2, 4, 4])
-        B_shape = shapes.get(B_name, [2, 4, 4])
-        C_shape = shapes.get(out, [A_shape[0], A_shape[1], B_shape[2]])
+        A_shape = _require_shape(shapes, A_name, sketch.name, expected_rank=3)
+        B_shape = _require_shape(shapes, B_name, sketch.name, expected_rank=3)
+        C_shape = _require_shape(shapes, out, sketch.name, expected_rank=3)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -548,11 +555,9 @@ class LinalgEmitter:
     def _emit_conv1d_ncw(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
         out_w_iv = _require_iv(loop.parallel_vars, 1, "parallel", sketch.name)
         ker_w_iv = _require_iv(loop.reduction_vars, 0, "reduction", sketch.name)
@@ -569,9 +574,9 @@ class LinalgEmitter:
         KW = _bound_size(bounds, loop.reduction_vars, 0)
         W_in = W_out + KW - 1
 
-        I_shape = shapes.get(I_name, [N, W_in])
-        K_shape = shapes.get(K_name, [KW])
-        O_shape = shapes.get(out, [N, W_out])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=2)
+        K_shape = _require_shape(shapes, K_name, sketch.name, expected_rank=1)
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=2)
 
         I_type = _memref_type(I_shape, et)
         K_type = _memref_type(K_shape, et)
@@ -591,11 +596,9 @@ class LinalgEmitter:
     def _emit_conv1d_nwc(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
         out_w_iv = _require_iv(loop.parallel_vars, 1, "parallel", sketch.name)
         ker_w_iv = _require_iv(loop.reduction_vars, 0, "reduction", sketch.name)
@@ -614,9 +617,9 @@ class LinalgEmitter:
         C = _bound_size(bounds, red, 1) if len(red) > 1 else 1
         Win = Wout + KW - 1
 
-        I_shape = shapes.get(I_name, [N, Win, C])
-        K_shape = shapes.get(K_name, [KW, C, F])
-        O_shape = shapes.get(out, [N, Wout, F])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=3)
+        K_shape = _require_shape(shapes, K_name, sketch.name, expected_rank=3)
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=3)
 
         I_type = _memref_type(I_shape, et)
         K_type = _memref_type(K_shape, et)
@@ -636,11 +639,9 @@ class LinalgEmitter:
     def _emit_conv2d_simple(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
         stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
             loop, I_name, sketch.name
@@ -656,9 +657,9 @@ class LinalgEmitter:
         IH = OH + KH - 1
         IW = OW + KW - 1
 
-        I_shape = shapes.get(I_name, [IH, IW])
-        K_shape = shapes.get(K_name, [KH, KW])
-        O_shape = shapes.get(out, [OH, OW])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=2)
+        K_shape = _require_shape(shapes, K_name, sketch.name, expected_rank=2)
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=2)
 
         I_type = _memref_type(I_shape, et)
         K_type = _memref_type(K_shape, et)
@@ -678,11 +679,9 @@ class LinalgEmitter:
     def _emit_conv2d_nhwc(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
         stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
             loop, I_name, sketch.name
@@ -701,9 +700,9 @@ class LinalgEmitter:
         IH = OH + KH - 1
         IW = OW + KW - 1
 
-        I_shape = shapes.get(I_name, [N, IH, IW, IC])
-        K_shape = shapes.get(K_name, [KH, KW, IC, OC])
-        O_shape = shapes.get(out, [N, OH, OW, OC])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=4)
+        K_shape = _require_shape(shapes, K_name, sketch.name, expected_rank=4)
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=4)
 
         I_type = _memref_type(I_shape, et)
         K_type = _memref_type(K_shape, et)
@@ -723,11 +722,9 @@ class LinalgEmitter:
     def _emit_conv2d_nchw(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
         stride_h, dilation_h, stride_w, dilation_w = _infer_conv2d_window_attrs(
             loop, I_name, sketch.name
@@ -746,9 +743,9 @@ class LinalgEmitter:
         IH = OH + KH - 1
         IW = OW + KW - 1
 
-        I_shape = shapes.get(I_name, [N, IC, IH, IW])
-        K_shape = shapes.get(K_name, [OC, IC, KH, KW])
-        O_shape = shapes.get(out, [N, OC, OH, OW])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=4)
+        K_shape = _require_shape(shapes, K_name, sketch.name, expected_rank=4)
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=4)
 
         I_type = _memref_type(I_shape, et)
         K_type = _memref_type(K_shape, et)
@@ -768,10 +765,8 @@ class LinalgEmitter:
     def _emit_pool2d_max(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if input_tensors else '%I'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -784,9 +779,9 @@ class LinalgEmitter:
         KW = _bound_size(bounds, red, 1) if len(red) > 1 else KH
         IH, IW = OH + KH - 1, OW + KW - 1
 
-        I_shape = shapes.get(I_name, [N, IH, IW, C])
+        I_shape = _require_shape(shapes, I_name, sketch.name, expected_rank=4)
         W_shape = [KH, KW]
-        O_shape = shapes.get(out, [N, OH, OW, C])
+        O_shape = _require_shape(shapes, out, sketch.name, expected_rank=4)
 
         I_type = _memref_type(I_shape, et)
         W_type = _memref_type(W_shape, et)
@@ -811,15 +806,19 @@ class LinalgEmitter:
         """Emit linalg.map for elementwise binary operations."""
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%C'
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        B_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
 
-        A_name = input_tensors[0] if len(input_tensors) > 0 else '%A'
-        B_name = input_tensors[1] if len(input_tensors) > 1 else '%B'
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, B_name, sketch.name)
+        C_shape = _require_shape(shapes, out, sketch.name)
 
-        A_shape = shapes.get(A_name, [8, 8])
-        B_shape = shapes.get(B_name, [8, 8])
-        C_shape = shapes.get(out, A_shape)
+        if A_shape != B_shape or C_shape != A_shape:
+            raise EmissionError(
+                f"Elementwise metadata gate failure for '{sketch.name}': "
+                f"shape mismatch A={A_shape}, B={B_shape}, O={C_shape}."
+            )
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -848,12 +847,10 @@ class LinalgEmitter:
     def _emit_relu(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [8, 8])
-        B_shape = shapes.get(out, A_shape)
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -875,12 +872,10 @@ class LinalgEmitter:
     def _emit_scale(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [8, 8])
-        B_shape = shapes.get(out, A_shape)
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -901,12 +896,10 @@ class LinalgEmitter:
     def _emit_copy(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [8, 8])
-        B_shape = shapes.get(out, A_shape)
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -923,15 +916,13 @@ class LinalgEmitter:
     def _emit_reduce_sum(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [8, 8])
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
 
         # Determine reduction dimension
         red_dim = 1 if "rowsum" in sketch.name else 0
-        B_shape = shapes.get(out, [A_shape[1 - red_dim]] if len(A_shape) > 1 else [1])
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -953,12 +944,10 @@ class LinalgEmitter:
     def _emit_reduce_max(self, sketch: OperationSketch, loop: LoopNestInfo, name: str) -> str:
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%B'
-
-        A_name = input_tensors[0] if input_tensors else '%A'
-        A_shape = shapes.get(A_name, [8, 8])
-        B_shape = shapes.get(out, [A_shape[0]])
+        A_name = _require_input_tensor(loop, sketch.name, 0)
+        out = _require_output_tensor(loop, sketch.name)
+        A_shape = _require_shape(shapes, A_name, sketch.name)
+        B_shape = _require_shape(shapes, out, sketch.name)
 
         A_type = _memref_type(A_shape, et)
         B_type = _memref_type(B_shape, et)
@@ -985,8 +974,7 @@ class LinalgEmitter:
         """Emit a fully-specified linalg.generic for any operation."""
         et = _map_elem_type(loop.element_type)
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%C'
+        out = _require_output_tensor(loop, sketch.name)
 
         # Build affine map attributes
         map_attrs = []
@@ -1002,10 +990,11 @@ class LinalgEmitter:
 
         # Build operand types
         operand_types = []
-        for i, t_name in enumerate(input_tensors[:sketch.num_inputs]):
-            shape = shapes.get(t_name, [4, 4])
+        for i in range(sketch.num_inputs):
+            t_name = _require_input_tensor(loop, sketch.name, i)
+            shape = _require_shape(shapes, t_name, sketch.name)
             operand_types.append(_memref_type(shape, et))
-        out_shape = shapes.get(out, [4, 4])
+        out_shape = _require_shape(shapes, out, sketch.name)
         out_type = _memref_type(out_shape, et)
 
         ins_parts = [f"%in{i}: {t}" for i, t in enumerate(operand_types)]
@@ -1096,6 +1085,8 @@ class StableHLOEmitter:
     }
 
     def _validate_required_metadata(self, sketch: OperationSketch, loop: LoopNestInfo) -> None:
+        _require_element_type(loop, sketch.name)
+
         if not loop.tensor_shapes:
             raise EmissionError(
                 f"Missing tensor_shapes metadata for '{sketch.name}'. "
@@ -1300,11 +1291,9 @@ class StableHLOEmitter:
         self, sketch: OperationSketch, loop: LoopNestInfo, name: str, et: str
     ) -> str:
         shapes = loop.tensor_shapes
-        input_tensors = loop.input_tensors
-        out = loop.output_tensor or '%O'
-
-        I_name = input_tensors[0] if len(input_tensors) > 0 else '%I'
-        K_name = input_tensors[1] if len(input_tensors) > 1 else '%K'
+        I_name = _require_input_tensor(loop, sketch.name, 0)
+        K_name = _require_input_tensor(loop, sketch.name, 1)
+        out = _require_output_tensor(loop, sketch.name)
         bounds = loop.bounds
         par = loop.parallel_vars
         red = loop.reduction_vars
@@ -1322,9 +1311,24 @@ class StableHLOEmitter:
             loop, I_name, sketch.name
         )
 
-        I_shape = shapes.get(I_name, [N, IH, IW, IC])
-        K_shape = shapes.get(K_name, [KH, KW, IC, OC])
-        O_shape = shapes.get(out, [N, OH, OW, OC])
+        I_shape_raw = _require_shape(shapes, I_name, sketch.name)
+        K_shape_raw = _require_shape(shapes, K_name, sketch.name)
+        O_shape_raw = _require_shape(shapes, out, sketch.name)
+
+        if len(I_shape_raw) == 2 and len(K_shape_raw) == 2 and len(O_shape_raw) == 2:
+            I_shape = [1, I_shape_raw[0], I_shape_raw[1], 1]
+            K_shape = [K_shape_raw[0], K_shape_raw[1], 1, 1]
+            O_shape = [1, O_shape_raw[0], O_shape_raw[1], 1]
+        elif len(I_shape_raw) == 4 and len(K_shape_raw) == 4 and len(O_shape_raw) == 4:
+            I_shape = I_shape_raw
+            K_shape = K_shape_raw
+            O_shape = O_shape_raw
+        else:
+            raise EmissionError(
+                f"Invalid tensor rank for '{sketch.name}'. "
+                f"Expected either (2,2,2) or (4,4,4) ranks for (I,K,O), got "
+                f"({len(I_shape_raw)}, {len(K_shape_raw)}, {len(O_shape_raw)})."
+            )
 
         I_type = _tensor_type(I_shape, et)
         K_type = _tensor_type(K_shape, et)

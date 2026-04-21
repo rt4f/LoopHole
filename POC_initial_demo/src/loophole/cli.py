@@ -16,22 +16,25 @@ Usage examples:
     loophole lift-c kernel.c --function=kernel --target stablehlo
   loophole lift matmul.mlir --target stablehlo --verbose
   loophole verify matmul.mlir --sketch linalg.matmul
-  loophole batch kernels/ --output-dir lifted/ --report
-  loophole demo
+    loophole batch kernels/ --output-dir lifted/ --report
+    loophole demo
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import fnmatch
 import os
+import platform
 import shlex
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Mapping, Optional
+import fnmatch
 
 import click
 from rich.console import Console
@@ -46,20 +49,101 @@ from loophole.lifter import (
     Lifter,
     LiftResult,
     LiftResultState,
-    lift as lift_one,
     resolve_policy_profile,
 )
+from loophole import __version__ as LOOPHOLE_VERSION
 from loophole.polygeist_frontend import (
     CgeistInvocation,
     CgeistResult,
     PolygeistFrontend,
     PolygeistFrontendError,
 )
-from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.mlir_validator import find_mlir_verifier, validate_mlir_artifact
+from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.z3_checker import CheckResult
 
 console = Console()
+
+CANONICAL_STABLEHLO_SKETCHES = {
+    "stablehlo.dot_general",
+    "stablehlo.dot_general_matvec",
+    "stablehlo.dot_general_vecdot",
+    "stablehlo.transpose",
+    "stablehlo.add",
+    "stablehlo.subtract",
+    "stablehlo.multiply",
+    "stablehlo.reduce{add}",
+    "stablehlo.reduce{add}_colsum",
+    "stablehlo.reduce{max}",
+    "stablehlo.convolution",
+}
+
+
+def _requires_trusted_artifact_validation(profile_name: str) -> bool:
+    return profile_name == "ci-strict"
+
+
+def _validate_verify_policy(*, no_verify: bool, strict: bool, profile: str) -> None:
+    """Reject incompatible strict/no-verify combinations before invoking the lifter."""
+    if not no_verify:
+        return
+
+    resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
+    if strict or resolved_profile.strict_mode:
+        raise click.UsageError("--strict cannot be combined with --no-verify")
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _compute_fixtures_fingerprint(source_hashes: Mapping[str, str]) -> str:
+    digest = hashlib.sha256()
+    for rel_path in sorted(source_hashes):
+        digest.update(rel_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source_hashes[rel_path].encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _build_canonical_stablehlo_summary(results: List[dict]) -> dict:
+    required_ops = sorted(CANONICAL_STABLEHLO_SKETCHES)
+    matched_required = {
+        row["sketch"]
+        for row in results
+        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES
+    }
+
+    proved = sum(
+        1
+        for row in results
+        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "PROVED"
+    )
+    unproved_timeout = sum(
+        1
+        for row in results
+        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "UNPROVED_TIMEOUT"
+    )
+    refuted = sum(
+        1
+        for row in results
+        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "REFUTED"
+    )
+
+    return {
+        "required_ops": required_ops,
+        "observed_required_ops": sorted(matched_required),
+        "missing_required_ops": sorted(set(required_ops) - matched_required),
+        "proved": proved,
+        "unproved_timeout": unproved_timeout,
+        "refuted": refuted,
+        "unmatched_files": [
+            row["file_rel"]
+            for row in results
+            if row.get("sketch") is None and row.get("state") == "REFUTED"
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +227,7 @@ def _build_docker_compile_script(
 @click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
               help="Output MLIR file path (default: <source_stem>.mlir)")
-@click.option("--docker-image", default="loophole-polygeist:llvm17", show_default=True,
+@click.option("--docker-image", default="ghcr.io/schizoid-man/loophole-polygeist:llvm17", show_default=True,
               help="Docker image containing cgeist/cgeist++ and mlir-opt")
 @click.option("--std", default=None,
               help="Language standard passed to Polygeist frontend (for example c11 or c++17)")
@@ -270,47 +354,39 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
               default="linalg", show_default=True,
               help="Target dialect to lift into")
 @click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
-              help="Policy profile used to set strictness/timeouts")
-@click.option("--z3-timeout", type=int, default=None,
-              help="Z3 solver timeout per check in milliseconds (default: profile value)")
+              help="Policy profile used to set strictness/timeouts (aliases: trusted, exploratory)")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved outputs")
+@click.option("--z3-timeout", type=int, default=10_000, show_default=True,
+              help="Z3 solver timeout per check in milliseconds")
 @click.option("--top-k", type=int, default=3, show_default=True,
               help="Number of top SymPy candidates to verify with Z3")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
 @click.option("--report", is_flag=True, help="Print a summary verification report")
 @click.option("--no-verify", is_flag=True,
               help="Skip Z3 verification (emit based on SymPy match only)")
-@click.option("--strict", is_flag=True,
-              help="Accept only formally proved results")
-@click.option("--validate-emitted", is_flag=True,
-              help="Validate emitted MLIR using an external verifier command")
-@click.option("--mlir-verifier", default=None,
-              help="Verifier command to run (default: auto-detect mlir-opt)")
 def lift_cmd(
     input_file: str,
     output: Optional[str],
     target: str,
     profile: str,
-    z3_timeout: Optional[int],
+    strict: bool,
+    z3_timeout: int,
     top_k: int,
     verbose: bool,
     report: bool,
     no_verify: bool,
-    strict: bool,
-    validate_emitted: bool,
-    mlir_verifier: Optional[str],
 ):
     """
     Lift an MLIR Affine IR file to a high-level tensor dialect.
 
     INPUT_FILE: Path to the .mlir file containing the scalar loop nest.
     """
+    src = Path(input_file).read_text(encoding="utf-8")
+    _validate_verify_policy(no_verify=no_verify, strict=strict, profile=profile)
+
     resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
     effective_strict = strict or resolved_profile.strict_mode
-
-    if effective_strict and no_verify:
-        raise click.UsageError("--strict cannot be combined with --no-verify.")
-
-    src = Path(input_file).read_text(encoding="utf-8")
 
     with Progress(
         SpinnerColumn(),
@@ -323,47 +399,16 @@ def lift_cmd(
 
         lifter = Lifter.from_policy_profile(
             target=target,
-            z3_timeout_ms=0 if no_verify else z3_timeout,
             profile_name=profile,
-            top_k=top_k,
+            z3_timeout_ms=0 if no_verify else z3_timeout,
             strict_mode=True if strict else None,
+            top_k=top_k,
             verbose=verbose,
         )
         result = lifter.lift(src)
         progress.advance(task)
 
-    _print_lift_result(
-        result,
-        output,
-        report,
-        verbose,
-        strict_mode=effective_strict,
-        validate_emitted=validate_emitted,
-        mlir_verifier=mlir_verifier,
-    )
-
-
-def _determine_exit_code(result: LiftResult, strict_mode: bool) -> int:
-    if result.success:
-        return 0
-    if result.result_state == LiftResultState.UNPROVED_TIMEOUT:
-        return 2 if strict_mode else 0
-    return 1
-
-
-def _result_state_color(state: LiftResultState) -> str:
-    if state == LiftResultState.PROVED:
-        return "green"
-    if state == LiftResultState.UNPROVED_TIMEOUT:
-        return "yellow"
-    return "red"
-
-
-def _resolve_profile_or_usage_error(profile_name: str):
-    try:
-        return resolve_policy_profile(profile_name=profile_name)
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
+    _print_lift_result(result, output, report, verbose, strict_mode=effective_strict)
 
 
 def _print_lift_result(
@@ -372,30 +417,27 @@ def _print_lift_result(
     report: bool,
     verbose: bool,
     strict_mode: bool = False,
-    validate_emitted: bool = False,
-    mlir_verifier: Optional[str] = None,
 ):
-    exit_code = _determine_exit_code(result, strict_mode)
-    validation_failed = False
+    if result.error and not result.partial_success:
+        console.print(Panel(
+            f"[red bold]LIFT FAILED[/red bold]\n\n"
+            f"[red]{result.error}[/red]",
+            title="LoopHole Result",
+            border_style="red",
+        ))
+        sys.exit(1)
 
+    # Determine status color
     if result.success:
         status = "[green bold]FORMALLY PROVED - EQUIVALENT[/green bold]"
         border = "green"
-    elif result.result_state == LiftResultState.UNPROVED_TIMEOUT:
+    elif result.partial_success:
         v = result.verification
         vstr = v.result.value if v else "unknown"
-        if strict_mode:
-            status = f"[yellow bold]UNPROVED_TIMEOUT - STRICT REJECTED (Z3: {vstr})[/yellow bold]"
-        else:
-            status = f"[yellow bold]UNPROVED_TIMEOUT (Z3: {vstr})[/yellow bold]"
+        status = f"[yellow bold]~ MATCHED (Z3: {vstr})[/yellow bold]"
         border = "yellow"
-    elif result.result_state == LiftResultState.REFUTED:
-        v = result.verification
-        vstr = v.result.value if v else "NO_VERDICT"
-        status = f"[red bold]REFUTED (Z3: {vstr})[/red bold]"
-        border = "red"
     else:
-        status = "[red bold]LIFT FAILED[/red bold]"
+        status = "[red]LIFT FAILED[/red]"
         border = "red"
 
     header_lines = [
@@ -406,19 +448,11 @@ def _print_lift_result(
         f"  SymPy confidence: {result.sympy_confidence:.2f}",
         f"  Total time      : {result.total_elapsed_ms:.1f} ms",
     ]
-    if result.error:
-        header_lines.append(f"  Error           : {result.error}")
     if result.verification:
         v = result.verification
         header_lines.append(
             f"  Z3 result       : {v.result.value} in {v.elapsed_ms:.1f} ms"
         )
-        if v.sympy_z3_disagreement:
-            header_lines.append(f"  SymPy/Z3 diag   : {v.sympy_z3_disagreement}")
-        if v.failed_implication:
-            header_lines.append(f"  Failed side     : {v.failed_implication}")
-        if v.mismatch_summary:
-            header_lines.append(f"  Counterexample  : {v.mismatch_summary}")
     if verbose and result.candidates_tried:
         header_lines.append(f"  Candidates tried: {', '.join(result.candidates_tried)}")
 
@@ -429,30 +463,6 @@ def _print_lift_result(
         syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=True)
         console.print(syntax)
 
-        if validate_emitted:
-            verifier_cmd = find_mlir_verifier(mlir_verifier)
-            if not verifier_cmd:
-                console.print(
-                    "[red]Emitted MLIR validation requested, but no verifier command was found. "
-                    "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
-                )
-                validation_failed = True
-            else:
-                try:
-                    validation = validate_mlir_artifact(result.emitted_mlir, verifier_cmd)
-                    if validation.ok:
-                        console.print(f"[green]Emitted MLIR validation passed[/green] via [dim]{verifier_cmd}[/dim]")
-                    else:
-                        validation_failed = True
-                        console.print(f"[red]Emitted MLIR validation failed[/red] via [dim]{verifier_cmd}[/dim]")
-                        if validation.stderr:
-                            console.print(Panel(validation.stderr[:2000], title="Verifier stderr", border_style="red"))
-                        elif validation.stdout:
-                            console.print(Panel(validation.stdout[:2000], title="Verifier stdout", border_style="red"))
-                except Exception as exc:
-                    validation_failed = True
-                    console.print(f"[red]Emitted MLIR validation error:[/red] {exc}")
-
         if output:
             Path(output).write_text(result.emitted_mlir, encoding="utf-8")
             console.print(f"\n[dim]Written to: {output}[/dim]")
@@ -460,11 +470,9 @@ def _print_lift_result(
     if report and result.verification:
         _print_verification_report(result.verification)
 
-    if validation_failed:
-        exit_code = 1
-
-    if exit_code != 0:
-        sys.exit(exit_code)
+    if strict_mode and result.partial_success:
+        # Align with strict-profile contract tests: timeout/unknown exits with code 2.
+        sys.exit(2)
 
 
 def _print_verification_report(v):
@@ -475,22 +483,8 @@ def _print_verification_report(v):
     table.add_row("Result", v.result.value)
     table.add_row("Time (ms)", f"{v.elapsed_ms:.1f}")
     table.add_row("Notes", v.notes or "-")
-    if v.sympy_confidence is not None:
-        table.add_row("SymPy confidence", f"{v.sympy_confidence:.2f}")
-    if v.sympy_z3_disagreement:
-        table.add_row("SymPy/Z3 diagnosis", v.sympy_z3_disagreement)
-    if v.failed_implication:
-        table.add_row("Failed implication", v.failed_implication)
-    if v.mismatch_summary:
-        table.add_row("Mismatch summary", v.mismatch_summary)
     if v.z3_model:
         table.add_row("Counter-example", v.z3_model[:200])
-    if v.counterexample_bindings:
-        preview_items = sorted(v.counterexample_bindings.items())[:8]
-        preview = ", ".join(f"{k}={val}" for k, val in preview_items)
-        if len(v.counterexample_bindings) > len(preview_items):
-            preview += f", ... ({len(v.counterexample_bindings)} total)"
-        table.add_row("Counterexample bindings", preview)
     console.print(table)
 
 
@@ -599,15 +593,15 @@ def cgeist_cmd(
               default="linalg", show_default=True,
               help="Target dialect to lift into")
 @click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
-              help="Policy profile used to set strictness/timeouts")
-@click.option("--z3-timeout", type=int, default=None,
-              help="Z3 solver timeout per check in milliseconds (default: profile value)")
+              help="Policy profile used to set strictness/timeouts (aliases: trusted, exploratory)")
+@click.option("--strict", is_flag=True,
+              help="Accept only formally proved outputs")
+@click.option("--z3-timeout", type=int, default=10_000, show_default=True,
+              help="Z3 solver timeout per check in milliseconds")
 @click.option("--top-k", type=int, default=3, show_default=True,
               help="Number of top SymPy candidates to verify with Z3")
 @click.option("--no-verify", is_flag=True,
               help="Skip Z3 verification (emit based on SymPy match only)")
-@click.option("--strict", is_flag=True,
-              help="Accept only formally proved results")
 @click.option("--report", is_flag=True, help="Print a summary verification report")
 @click.option("--language", "-x", type=click.Choice(["c", "cpp"]), default="c",
               show_default=True, help="Source language for cgeist")
@@ -628,20 +622,16 @@ def cgeist_cmd(
 @click.option("--timeout-sec", type=int, default=60, show_default=True,
               help="cgeist subprocess timeout in seconds")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose pipeline output")
-@click.option("--validate-emitted", is_flag=True,
-              help="Validate emitted MLIR using an external verifier command")
-@click.option("--mlir-verifier", default=None,
-              help="Verifier command to run (default: auto-detect mlir-opt)")
 def lift_c_cmd(
     source_files: tuple[str, ...],
     output: Optional[str],
     mlir_output: Optional[str],
     target: str,
     profile: str,
-    z3_timeout: Optional[int],
+    strict: bool,
+    z3_timeout: int,
     top_k: int,
     no_verify: bool,
-    strict: bool,
     report: bool,
     language: str,
     function: Optional[str],
@@ -653,17 +643,14 @@ def lift_c_cmd(
     docker_image: Optional[str],
     timeout_sec: int,
     verbose: bool,
-    validate_emitted: bool,
-    mlir_verifier: Optional[str],
 ):
     """One-step flow: C/C++ source -> cgeist MLIR -> lifted tensor dialect."""
     if not source_files:
         raise click.UsageError("At least one source file is required.")
+
+    _validate_verify_policy(no_verify=no_verify, strict=strict, profile=profile)
     resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
     effective_strict = strict or resolved_profile.strict_mode
-
-    if effective_strict and no_verify:
-        raise click.UsageError("--strict cannot be combined with --no-verify.")
 
     frontend = PolygeistFrontend(
         cgeist_bin=cgeist_bin,
@@ -705,10 +692,10 @@ def lift_c_cmd(
 
     lifter = Lifter.from_policy_profile(
         target=target,
-        z3_timeout_ms=0 if no_verify else z3_timeout,
         profile_name=profile,
-        top_k=top_k,
+        z3_timeout_ms=0 if no_verify else z3_timeout,
         strict_mode=True if strict else None,
+        top_k=top_k,
         verbose=verbose,
     )
     result = lifter.lift(cgeist_result.mlir_text)
@@ -719,15 +706,7 @@ def lift_c_cmd(
             f"command: {' '.join(cgeist_result.command)}[/dim]"
         )
 
-    _print_lift_result(
-        result,
-        output,
-        report,
-        verbose,
-        strict_mode=effective_strict,
-        validate_emitted=validate_emitted,
-        mlir_verifier=mlir_verifier,
-    )
+    _print_lift_result(result, output, report, verbose, strict_mode=effective_strict)
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +796,21 @@ def verify(input_file: str, sketch: Optional[str], z3_timeout: int, verbose: boo
 # ---------------------------------------------------------------------------
 
 
+def _resolve_profile_or_usage_error(profile_name: str):
+    try:
+        return resolve_policy_profile(profile_name=profile_name)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
+def _result_state_color(state: LiftResultState) -> str:
+    if state == LiftResultState.PROVED:
+        return "green"
+    if state == LiftResultState.UNPROVED_TIMEOUT:
+        return "yellow"
+    return "red"
+
+
 def _collect_batch_mlir_files(
     in_path: Path,
     include_globs: tuple[str, ...],
@@ -824,40 +818,42 @@ def _collect_batch_mlir_files(
     max_files: Optional[int],
 ) -> tuple[list[Path], int]:
     include_patterns = include_globs or ("**/*.mlir",)
-    seen: set[Path] = set()
-    matched: list[Path] = []
+    seen_resolved_paths: set[Path] = set()
+    matched_files: list[Path] = []
 
     for pattern in include_patterns:
         for candidate in in_path.glob(pattern):
             if not candidate.is_file() or candidate.suffix.lower() != ".mlir":
                 continue
-            # Avoid recursive re-processing of previously generated artifacts.
+            # Avoid re-processing generated outputs in repeated batch runs.
             if candidate.name.endswith("_lifted.mlir"):
                 continue
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            matched.append(candidate)
 
-    matched.sort(key=lambda path: path.relative_to(in_path).as_posix())
+            resolved = candidate.resolve()
+            if resolved in seen_resolved_paths:
+                continue
+            seen_resolved_paths.add(resolved)
+            matched_files.append(candidate)
+
+    matched_files.sort(key=lambda p: p.relative_to(in_path).as_posix())
 
     if exclude_globs:
-        filtered: list[Path] = []
-        for candidate in matched:
+        filtered_files: list[Path] = []
+        for candidate in matched_files:
             rel_path = candidate.relative_to(in_path).as_posix()
             if any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude_globs):
                 continue
-            filtered.append(candidate)
-        matched = filtered
+            filtered_files.append(candidate)
+        matched_files = filtered_files
 
-    matched_before_limit = len(matched)
+    total_matched_before_limit = len(matched_files)
+
     if max_files is not None:
         if max_files < 1:
             raise click.UsageError("--max-files must be >= 1 when provided.")
-        matched = matched[:max_files]
+        matched_files = matched_files[:max_files]
 
-    return matched, matched_before_limit
+    return matched_files, total_matched_before_limit
 
 
 @main.command()
@@ -867,7 +863,7 @@ def _collect_batch_mlir_files(
 @click.option("--target", "-t", type=click.Choice(["linalg", "stablehlo", "both"]),
               default="linalg", show_default=True)
 @click.option("--profile", type=click.Choice(POLICY_PROFILE_CHOICES), default="default", show_default=True,
-              help="Policy profile used to set strictness/timeouts")
+              help="Policy profile used to set strictness/timeouts (aliases: trusted, exploratory)")
 @click.option("--strict", is_flag=True,
               help="Accept only formally proved outputs")
 @click.option("--z3-timeout", type=int, default=None,
@@ -939,6 +935,13 @@ def batch(
 
     resolved_profile = _resolve_profile_or_usage_error(profile_name=profile)
     effective_strict = strict or resolved_profile.strict_mode
+    trusted_validation_required = _requires_trusted_artifact_validation(resolved_profile.name)
+
+    if trusted_validation_required and not validate_emitted:
+        console.print(
+            "[dim]Trusted lane profile detected; enabling mandatory emitted artifact validation.[/dim]"
+        )
+        validate_emitted = True
 
     lifter = Lifter.from_policy_profile(
         target=target,
@@ -949,23 +952,29 @@ def batch(
     )
 
     results = []
+    source_hashes: Dict[str, str] = {}
     state_counts = {
         LiftResultState.PROVED: 0,
         LiftResultState.UNPROVED_TIMEOUT: 0,
         LiftResultState.REFUTED: 0,
     }
-    validation_failed = 0
-    displayed_rows = 0
     timings: list[dict[str, object]] = []
+    validation_failed = 0
 
     verifier_cmd = None
     if validate_emitted:
         verifier_cmd = find_mlir_verifier(mlir_verifier)
         if not verifier_cmd:
-            console.print(
-                "[red]Batch emitted MLIR validation requested, but no verifier command was found. "
-                "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
-            )
+            if trusted_validation_required:
+                console.print(
+                    "[red]Trusted lane requires emitted MLIR validation, but no verifier command was found. "
+                    "Install mlir-opt (or variant) or set --mlir-verifier / LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+                )
+            else:
+                console.print(
+                    "[red]Batch emitted MLIR validation requested, but no verifier command was found. "
+                    "Set --mlir-verifier or LOOPHOLE_MLIR_VERIFY_CMD.[/red]"
+                )
             sys.exit(1)
 
     table = Table(title=f"Batch Lift Results: {input_dir}", show_header=True)
@@ -975,6 +984,7 @@ def batch(
     table.add_column("Z3")
     table.add_column("Conf")
     table.add_column("ms")
+    displayed_rows = 0
 
     with Progress(
         SpinnerColumn(),
@@ -989,6 +999,8 @@ def batch(
             result = lifter.lift(src)
 
             rel_file = mlir_file.relative_to(in_path).as_posix()
+            source_hash = _sha256_text(src)
+            source_hashes[rel_file] = source_hash
             state = result.result_state
             state_counts[state] += 1
             state_label = state.value.upper()
@@ -1015,12 +1027,13 @@ def batch(
                 displayed_rows += 1
 
             emitted_path = None
-            if write_emitted and result.emitted_mlir:
-                rel_source = mlir_file.relative_to(in_path)
-                out_file = out_path / rel_source.parent / f"{rel_source.stem}_lifted.mlir"
-                out_file.parent.mkdir(parents=True, exist_ok=True)
-                out_file.write_text(result.emitted_mlir, encoding="utf-8")
-                emitted_path = str(out_file)
+            if result.emitted_mlir:
+                if write_emitted:
+                    rel_source_path = mlir_file.relative_to(in_path)
+                    out_file = out_path / rel_source_path.parent / f"{rel_source_path.stem}_lifted.mlir"
+                    out_file.parent.mkdir(parents=True, exist_ok=True)
+                    out_file.write_text(result.emitted_mlir, encoding="utf-8")
+                    emitted_path = str(out_file)
 
                 if validate_emitted and verifier_cmd:
                     validation = validate_mlir_artifact(result.emitted_mlir, verifier_cmd)
@@ -1061,6 +1074,7 @@ def batch(
                 "success": result.success,
                 "error": result.error,
                 "emitted_file": emitted_path,
+                "source_sha256": source_hash,
             })
             progress.advance(task)
 
@@ -1071,7 +1085,9 @@ def batch(
 
     console.print(table)
     if total > displayed_rows:
-        console.print(f"[dim]Displayed {displayed_rows} of {total} rows. Use --table-limit to adjust.[/dim]")
+        console.print(
+            f"[dim]Displayed {displayed_rows} of {total} rows. Use --table-limit to adjust.[/dim]"
+        )
 
     console.print(
         f"\n[bold]Summary:[/bold] "
@@ -1103,6 +1119,21 @@ def batch(
     if report:
         resolved_report_path = report_path or (out_path / "loophole_report.json")
         resolved_report_path.parent.mkdir(parents=True, exist_ok=True)
+        run_id = str(uuid.uuid4())
+        fixtures_fingerprint = _compute_fixtures_fingerprint(source_hashes)
+        canonical_summary = (
+            _build_canonical_stablehlo_summary(results)
+            if target in ("stablehlo", "both")
+            else {
+                "required_ops": [],
+                "observed_required_ops": [],
+                "missing_required_ops": [],
+                "proved": 0,
+                "unproved_timeout": 0,
+                "refuted": 0,
+                "unmatched_files": [],
+            }
+        )
 
         slowest_rows = sorted(
             timings,
@@ -1111,18 +1142,34 @@ def batch(
         )[: min(25, len(timings))]
 
         report_payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
+            "compatible_schema_versions": ["1.0"],
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "input_dir": str(in_path),
             "output_dir": str(out_path),
             "target": target,
             "z3_timeout_ms": lifter.z3_timeout_ms,
+            "run_metadata": {
+                "run_id": run_id,
+                "profile_requested": profile,
+                "profile_resolved": resolved_profile.name,
+                "strict_requested": strict,
+                "strict_mode": effective_strict,
+                "policy_profile_env": os.environ.get("LOOPHOLE_POLICY_PROFILE"),
+                "python_version": platform.python_version(),
+                "platform": platform.platform(),
+                "loophole_version": LOOPHOLE_VERSION,
+                "fixtures_fingerprint_sha256": fixtures_fingerprint,
+                "fixture_count": len(source_hashes),
+                "docker_image": os.environ.get("LOOPHOLE_DOCKER_IMAGE"),
+            },
             "selection": {
                 "include_globs": list(include_globs),
                 "exclude_globs": list(exclude_globs),
                 "max_files": max_files,
                 "matched_before_limit": matched_before_limit,
                 "processed_files": total,
+                "processed_file_rels": [row["file_rel"] for row in results],
             },
             "summary": {
                 "total_files": total,
@@ -1134,7 +1181,10 @@ def batch(
                 "accepted_loose": sum(1 for r in results if r["accepted_loose"]),
                 "accepted_strict": sum(1 for r in results if r["accepted_strict"]),
                 "write_emitted": write_emitted,
+                "validate_emitted": validate_emitted,
+                "validation_failures": validation_failed,
             },
+            "canonical_stablehlo_summary": canonical_summary,
             "slowest": [
                 {
                     "file_rel": str(row["file_rel"]),
@@ -1157,6 +1207,7 @@ def batch(
 
     if effective_strict and (unproved_timeout > 0 or refuted > 0):
         sys.exit(1)
+
 
 # ---------------------------------------------------------------------------
 # loophole sketches
@@ -1215,7 +1266,7 @@ def demo(
     """
     Run the built-in demo: lift canonical examples (matmul, transpose, conv1d, conv2d).
 
-    No input files needed - uses embedded MLIR fixtures.
+    No input files needed — uses embedded MLIR fixtures.
     """
     from loophole.tests.fixtures import DEMO_FIXTURES
 
@@ -1242,7 +1293,7 @@ def demo(
     results_data = []
 
     for fixture_name, mlir_text in DEMO_FIXTURES.items():
-        console.print(f"\n[bold]--- {fixture_name} ---[/bold]")
+        console.print(f"\n[bold]─── {fixture_name} ───[/bold]")
 
         with Progress(
             SpinnerColumn(),
@@ -1255,28 +1306,30 @@ def demo(
             result = lifter.lift(mlir_text)
             progress.advance(task)
 
-        state = result.result_state
-        state_label = state.value.upper()
-        state_color = _result_state_color(state)
-        if result.verification:
-            z3_str = (
-                f"[{state_color}]{result.verification.result.value}[/{state_color}] "
-                f"in {result.verification.elapsed_ms:.0f}ms"
-            )
+        # Print summary line
+        if result.success:
+            icon = "[green]OK[/green]"
+            z3_str = f"[green]{result.verification.result.value}[/green] in {result.verification.elapsed_ms:.0f}ms"
+        elif result.partial_success:
+            icon = "[yellow]~[/yellow]"
+            v = result.verification
+            z3_str = f"[yellow]{v.result.value if v else 'N/A'}[/yellow]"
         else:
-            z3_str = "[dim]NO_VERDICT[/dim]"
+            icon = "[red]FAIL[/red]"
+            z3_str = "[red]FAIL[/red]"
 
         console.print(
-            f"  [{state_color}]{state_label}[/{state_color}] {fixture_name} -> [magenta]{result.sketch_name or 'no match'}[/magenta] "
+            f"  {icon} {fixture_name} → [magenta]{result.sketch_name or 'no match'}[/magenta] "
             f"| Z3: {z3_str} | conf: {result.sympy_confidence:.2f} | {result.total_elapsed_ms:.0f}ms"
         )
 
+        # Print parser diagnostics if any exist
         if result.parser_diagnostics:
             for diag in result.parser_diagnostics:
                 level_color = {"error": "red", "warning": "yellow", "debug": "cyan"}.get(diag.level, "white")
                 console.print(f"    [{level_color}]{diag.level.upper()}[/{level_color}] {diag.location}: {diag.reason}")
                 if diag.guidance:
-                    console.print(f"      -> {diag.guidance}")
+                    console.print(f"      → {diag.guidance}")
 
         if result.emitted_mlir:
             syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=False)
@@ -1285,11 +1338,13 @@ def demo(
         results_data.append({
             "kernel": fixture_name,
             "sketch": result.sketch_name,
-            "state": state_label,
+            "success": result.success,
+            "partial": result.partial_success,
             "confidence": result.sympy_confidence,
             "ms": result.total_elapsed_ms,
         })
 
+    # Final summary table
     console.print("\n")
     table = Table(title="Demo Summary", show_header=True)
     table.add_column("Kernel", style="cyan")
@@ -1298,18 +1353,14 @@ def demo(
     table.add_column("Conf")
     table.add_column("ms")
 
-    proved = sum(1 for r in results_data if r["state"] == "PROVED")
-    unproved_timeout = sum(1 for r in results_data if r["state"] == "UNPROVED_TIMEOUT")
-    refuted = sum(1 for r in results_data if r["state"] == "REFUTED")
+    proved = sum(1 for r in results_data if r["success"])
+    partial = sum(1 for r in results_data if r["partial"] and not r["success"])
+    refuted = len(results_data) - proved - partial
 
     for r in results_data:
-        if r["state"] == "PROVED":
-            status = "[green]PROVED[/green]"
-        elif r["state"] == "UNPROVED_TIMEOUT":
-            status = "[yellow]UNPROVED_TIMEOUT[/yellow]"
-        else:
-            status = "[red]REFUTED[/red]"
-
+        status = "[green]PROVED[/green]" if r["success"] else (
+            "[yellow]PARTIAL[/yellow]" if r["partial"] else "[red]FAIL[/red]"
+        )
         table.add_row(
             r["kernel"],
             r["sketch"] or "-",
@@ -1322,11 +1373,10 @@ def demo(
     console.print(
         f"\n[bold]Result:[/bold] "
         f"[green]{proved}/{len(results_data)} formally proved[/green] | "
-        f"[yellow]{unproved_timeout} unproved (timeout/unknown)[/yellow] | "
-        f"[red]{refuted} refuted[/red]"
+        f"[yellow]{partial} partial (Z3 timeout)[/yellow]"
     )
 
-    if effective_strict and (unproved_timeout > 0 or refuted > 0):
+    if effective_strict and (partial > 0 or refuted > 0):
         sys.exit(1)
 
 

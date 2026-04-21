@@ -70,7 +70,14 @@ POLICY_PROFILES: Dict[str, PolicyProfile] = {
     ),
 }
 
-POLICY_PROFILE_CHOICES: Tuple[str, ...] = ("default",) + tuple(POLICY_PROFILES.keys())
+POLICY_PROFILE_ALIASES: Dict[str, str] = {
+    "exploratory": "local-explore",
+    "trusted": "ci-strict",
+}
+
+POLICY_PROFILE_CHOICES: Tuple[str, ...] = (
+    "default",
+) + tuple(POLICY_PROFILES.keys()) + tuple(POLICY_PROFILE_ALIASES.keys())
 
 
 def resolve_policy_profile(
@@ -92,6 +99,8 @@ def resolve_policy_profile(
         env_map = env or os.environ
         env_selected = env_map.get(POLICY_PROFILE_ENV_VAR, "").strip().lower()
         selected = env_selected or DEFAULT_POLICY_PROFILE
+
+    selected = POLICY_PROFILE_ALIASES.get(selected, selected)
 
     if selected not in POLICY_PROFILES:
         valid = ", ".join(POLICY_PROFILE_CHOICES)

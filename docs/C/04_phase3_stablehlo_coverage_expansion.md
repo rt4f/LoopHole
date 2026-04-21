@@ -8,6 +8,10 @@ This update starts Person C Phase 3 tasks C-08, C-09, and C-10:
 - C-09: Add emitter support for newly covered StableHLO operations.
 - C-10: Add integration tests for each new StableHLO operation path.
 
+Follow-on (Phase 4):
+
+- C-14 canonical-suite tracking and report integration are documented in `08_c14_stablehlo_canonical_suite.md`.
+
 ## Implemented
 
 ### C-08: Sketch Coverage
