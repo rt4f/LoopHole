@@ -344,6 +344,11 @@ class AffineExtractor:
         induction_vars, bounds_raw, loop_order, iv_map = self._parse_loop_structure(text)
         reads, writes = self._collect_accesses(text, iv_map, const_map)
         compute_ops = self._collect_compute_ops(text)
+        self._add_unsupported_form_diagnostics(
+            text=text,
+            induction_vars=induction_vars,
+            writes=writes,
+        )
         tensor_shapes, tensor_types = self._resolve_tensor_metadata(func_args, reads, writes)
         element_type = self._dominant_element_type(tensor_types)
         reduction_vars, parallel_vars = self._classify_iv_roles(induction_vars, writes)
@@ -373,6 +378,73 @@ class AffineExtractor:
             accumulation_op=accum_op,
             diagnostics=self.diagnostics,
         )
+
+    def _add_unsupported_form_diagnostics(
+        self,
+        text: str,
+        induction_vars: List[str],
+        writes: List[AccessPattern],
+    ) -> None:
+        """Emit explicit unsupported-form diagnostics for known corpus miss classes."""
+        if "iter_args(" in text:
+            self._add_diagnostic(
+                "warning",
+                "_add_unsupported_form_diagnostics",
+                "Unsupported scf.for iter_args form detected",
+                "iter_args(",
+                guidance=(
+                    "Rewrite iter_args reductions to explicit output memref accumulation "
+                    "(load/add/store) before lifting."
+                ),
+            )
+
+        if "affine.if" in text or "scf.if" in text:
+            self._add_diagnostic(
+                "warning",
+                "_add_unsupported_form_diagnostics",
+                "Conditional region form is not modeled by current parser",
+                "affine.if / scf.if",
+                guidance=(
+                    "Specialize or predicatize conditionals before lifting, or split guarded "
+                    "regions into separate loop kernels with explicit stores."
+                ),
+            )
+
+        if "affine.apply" in text:
+            self._add_diagnostic(
+                "warning",
+                "_add_unsupported_form_diagnostics",
+                "Index materialization via affine.apply is not modeled",
+                "affine.apply",
+                guidance=(
+                    "Canonicalize affine.apply results into direct load/store subscript "
+                    "expressions before lifting."
+                ),
+            )
+
+        if not induction_vars:
+            self._add_diagnostic(
+                "warning",
+                "_add_unsupported_form_diagnostics",
+                "No affine.for/scf.for loop nest detected",
+                text[:120],
+                guidance=(
+                    "Lower vectorized/region-only frontend IR into explicit affine/scf loop "
+                    "nests before parsing."
+                ),
+            )
+
+        if not writes:
+            self._add_diagnostic(
+                "warning",
+                "_add_unsupported_form_diagnostics",
+                "No explicit output store detected",
+                text[:120],
+                guidance=(
+                    "Ensure the kernel writes output via affine.store/memref.store, or lower "
+                    "implicit return/iter_args updates into explicit stores."
+                ),
+            )
 
     def _validate_mlir_syntax(self, text: str) -> None:
         if not self.validate_with_mlir or _mlir_ir is None:
