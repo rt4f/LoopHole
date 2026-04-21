@@ -13,6 +13,7 @@ from loophole.tests.fixtures import (
     TRANSPOSE_2D_MLIR,
     TRANSPOSE_3D_PERM_120_MLIR,
     TRANSPOSE_3D_PERM_201_MLIR,
+    CONV_2D_SIMPLE_MLIR,
     CONV_1D_STRIDED_DILATED_MLIR,
     CONV_2D_STRIDED_DILATED_MLIR,
     DOT_PRODUCT_MLIR,
@@ -89,7 +90,13 @@ class TestLinalgEmitter:
                 assert isinstance(result, str), f"emit returned non-string for {sketch.name}"
                 assert len(result) > 0, f"emit returned empty string for {sketch.name}"
             except EmissionError as exc:
-                assert "policy failure" in str(exc).lower() or "missing" in str(exc).lower()
+                msg = str(exc).lower()
+                assert (
+                    "policy failure" in msg
+                    or "missing" in msg
+                    or "invalid tensor rank" in msg
+                    or "unsupported" in msg
+                )
 
     def test_emit_matmul_named_op(self, extractor, linalg_emitter):
         info = extractor.extract(MATMUL_MLIR)
@@ -324,3 +331,53 @@ class TestStableHLOEmitter:
         result = stablehlo_emitter.emit(sketch, info)
         assert "stablehlo.reduce" in result
         assert "applies stablehlo.maximum" in result
+
+
+class TestEmitterValidationConsistencyB13:
+    def test_missing_tensor_shapes_gate_is_consistent_across_dialects(self, extractor, linalg_emitter, stablehlo_emitter):
+        info = deepcopy(extractor.extract(MATMUL_MLIR))
+        info.tensor_shapes = {}
+
+        with pytest.raises(EmissionError, match="Missing tensor_shapes metadata"):
+            linalg_emitter.emit(SKETCH_BY_NAME["linalg.matmul"], info)
+
+        with pytest.raises(EmissionError, match="Missing tensor_shapes metadata"):
+            stablehlo_emitter.emit(SKETCH_BY_NAME["stablehlo.dot_general"], info)
+
+    def test_missing_element_type_gate_is_consistent_across_dialects(self, extractor, linalg_emitter, stablehlo_emitter):
+        info = deepcopy(extractor.extract(MATMUL_MLIR))
+        info.element_type = ""
+
+        with pytest.raises(EmissionError, match="Missing element type metadata"):
+            linalg_emitter.emit(SKETCH_BY_NAME["linalg.matmul"], info)
+
+        with pytest.raises(EmissionError, match="Missing element type metadata"):
+            stablehlo_emitter.emit(SKETCH_BY_NAME["stablehlo.dot_general"], info)
+
+    def test_rank_gate_is_actionable_for_linalg_matmul(self, extractor, linalg_emitter):
+        info = deepcopy(extractor.extract(MATMUL_MLIR))
+        info.tensor_shapes["%A"] = [4]
+
+        with pytest.raises(EmissionError, match="Invalid tensor rank"):
+            linalg_emitter.emit(SKETCH_BY_NAME["linalg.matmul"], info)
+
+    def test_rank_gate_is_actionable_for_stablehlo_convolution(self, extractor, stablehlo_emitter):
+        info = deepcopy(extractor.extract(CONV_2D_STRIDED_DILATED_MLIR))
+        info.tensor_shapes["%I"] = [8, 8, 1]
+
+        with pytest.raises(EmissionError, match="Invalid tensor rank"):
+            stablehlo_emitter.emit(SKETCH_BY_NAME["stablehlo.convolution"], info)
+
+    def test_convolution_attr_policy_failure_is_consistent_across_dialects(self, extractor, linalg_emitter, stablehlo_emitter):
+        info = deepcopy(extractor.extract(CONV_2D_SIMPLE_MLIR))
+
+        for read in info.reads:
+            if read.tensor_name == "%I" and len(read.index_exprs) >= 2:
+                read.index_exprs[0] = "%oh + %ow"
+                break
+
+        with pytest.raises(EmissionError, match="Convolution attr policy failure"):
+            linalg_emitter.emit(SKETCH_BY_NAME["linalg.conv_2d"], info)
+
+        with pytest.raises(EmissionError, match="Convolution attr policy failure"):
+            stablehlo_emitter.emit(SKETCH_BY_NAME["stablehlo.convolution"], info)
