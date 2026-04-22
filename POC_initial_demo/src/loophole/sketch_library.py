@@ -637,6 +637,43 @@ SKETCH_STABLEHLO_REDUCE_MAX = OperationSketch(
     description="B[i] = max_j A[i,j]  — StableHLO row-wise reduce max",
 )
 
+SKETCH_STABLEHLO_CONV_1D_SIMPLE = OperationSketch(
+    name="stablehlo.convolution_1d",
+    dialect="stablehlo",
+    dim_names=["n", "w", "kw"],
+    indexing_maps=[
+        "(n, w, kw) -> (n, w + kw)",
+        "(n, w, kw) -> (kw,)",
+        "(n, w, kw) -> (n, w)",
+    ],
+    iterator_types=[IteratorType.PARALLEL, IteratorType.PARALLEL, IteratorType.REDUCTION],
+    compute_payload=ComputePayloadType.MULTIPLY_ACCUMULATE,
+    num_inputs=2,
+    num_outputs=1,
+    description="O[n,w] = sum_kw I[n,w+kw] * K[kw]  — StableHLO 1-D convolution",
+)
+
+SKETCH_STABLEHLO_CONV_2D_SIMPLE = OperationSketch(
+    name="stablehlo.convolution_2d",
+    dialect="stablehlo",
+    dim_names=["oh", "ow", "kh", "kw"],
+    indexing_maps=[
+        "(oh, ow, kh, kw) -> (oh + kh, ow + kw)",
+        "(oh, ow, kh, kw) -> (kh, kw)",
+        "(oh, ow, kh, kw) -> (oh, ow)",
+    ],
+    iterator_types=[
+        IteratorType.PARALLEL,
+        IteratorType.PARALLEL,
+        IteratorType.REDUCTION,
+        IteratorType.REDUCTION,
+    ],
+    compute_payload=ComputePayloadType.MULTIPLY_ACCUMULATE,
+    num_inputs=2,
+    num_outputs=1,
+    description="O[oh,ow] = sum_{kh,kw} I[oh+kh,ow+kw] * K[kh,kw]  — StableHLO 2-D convolution",
+)
+
 SKETCH_STABLEHLO_CONV = OperationSketch(
     name="stablehlo.convolution",
     dialect="stablehlo",
@@ -702,6 +739,8 @@ SKETCH_LIBRARY: List[OperationSketch] = [
     SKETCH_STABLEHLO_REDUCE_SUM,
     SKETCH_STABLEHLO_REDUCE_SUM_COLWISE,
     SKETCH_STABLEHLO_REDUCE_MAX,
+    SKETCH_STABLEHLO_CONV_1D_SIMPLE,
+    SKETCH_STABLEHLO_CONV_2D_SIMPLE,
     SKETCH_STABLEHLO_CONV,
 ]
 

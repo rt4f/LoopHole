@@ -43,6 +43,14 @@ CANONICAL_STABLEHLO_SKETCHES = {
 }
 
 
+def _canonicalize_stablehlo_sketch_name(sketch_name: Optional[str]) -> Optional[str]:
+    if not sketch_name:
+        return sketch_name
+    if sketch_name.startswith("stablehlo.convolution"):
+        return "stablehlo.convolution"
+    return sketch_name
+
+
 def _discover_fixtures(fixtures_dir: Path) -> List[Path]:
     return sorted(
         path
@@ -150,9 +158,9 @@ def _build_canonical_stablehlo_summary(target: str, rows: List[Dict]) -> Dict:
         }
 
     matched_required = {
-        row["sketch"]
+        _canonicalize_stablehlo_sketch_name(row.get("sketch"))
         for row in rows
-        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES
+        if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
     }
 
     return {
@@ -163,17 +171,20 @@ def _build_canonical_stablehlo_summary(target: str, rows: List[Dict]) -> Dict:
         "proved": sum(
             1
             for row in rows
-            if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "PROVED"
+            if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+            and row.get("state") == "PROVED"
         ),
         "unproved_timeout": sum(
             1
             for row in rows
-            if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "UNPROVED_TIMEOUT"
+            if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+            and row.get("state") == "UNPROVED_TIMEOUT"
         ),
         "refuted": sum(
             1
             for row in rows
-            if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "REFUTED"
+            if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+            and row.get("state") == "REFUTED"
         ),
         "unmatched_files": [
             row["file_rel"]

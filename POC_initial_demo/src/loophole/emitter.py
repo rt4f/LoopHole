@@ -234,6 +234,10 @@ def _infer_conv2d_window_attrs(loop: LoopNestInfo, input_name: str, op_name: str
         if len(par_hits) == 1 and len(red_hits) == 1:
             axes.append((par_hits[0][1], red_hits[0][1]))
 
+    if len(axes) == 1 and len(loop.reduction_vars) == 1:
+        (stride_w, dilation_w) = axes[0]
+        return 1, 1, stride_w, dilation_w
+
     if len(axes) < 2:
         raise EmissionError(
             f"Convolution attr policy failure for '{op_name}': "
@@ -1081,6 +1085,8 @@ class StableHLOEmitter:
         "stablehlo.reduce{add}": "_emit_reduce",
         "stablehlo.reduce{add}_colsum": "_emit_reduce",
         "stablehlo.reduce{max}": "_emit_reduce",
+        "stablehlo.convolution_1d": "_emit_convolution",
+        "stablehlo.convolution_2d": "_emit_convolution",
         "stablehlo.convolution": "_emit_convolution",
     }
 
@@ -1315,7 +1321,11 @@ class StableHLOEmitter:
         K_shape_raw = _require_shape(shapes, K_name, sketch.name)
         O_shape_raw = _require_shape(shapes, out, sketch.name)
 
-        if len(I_shape_raw) == 2 and len(K_shape_raw) == 2 and len(O_shape_raw) == 2:
+        if len(I_shape_raw) == 2 and len(K_shape_raw) == 1 and len(O_shape_raw) == 2:
+            I_shape = [I_shape_raw[0], 1, I_shape_raw[1], 1]
+            K_shape = [1, K_shape_raw[0], 1, 1]
+            O_shape = [O_shape_raw[0], 1, O_shape_raw[1], 1]
+        elif len(I_shape_raw) == 2 and len(K_shape_raw) == 2 and len(O_shape_raw) == 2:
             I_shape = [1, I_shape_raw[0], I_shape_raw[1], 1]
             K_shape = [K_shape_raw[0], K_shape_raw[1], 1, 1]
             O_shape = [1, O_shape_raw[0], O_shape_raw[1], 1]
@@ -1326,7 +1336,7 @@ class StableHLOEmitter:
         else:
             raise EmissionError(
                 f"Invalid tensor rank for '{sketch.name}'. "
-                f"Expected either (2,2,2) or (4,4,4) ranks for (I,K,O), got "
+                f"Expected either (2,1,2), (2,2,2), or (4,4,4) ranks for (I,K,O), got "
                 f"({len(I_shape_raw)}, {len(K_shape_raw)}, {len(O_shape_raw)})."
             )
 

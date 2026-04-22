@@ -24,6 +24,12 @@ This folder contains documentation for Person A work in the three-person paralle
 |---|---|---|
 | [05_sprint1_a11_a12_closure.md](05_sprint1_a11_a12_closure.md) | A-11 contract parity and A-12 week-1 dual-target baseline evidence | Done |
 
+### Sprint 2 (12-Week Plan V2): Weak-Kernel Hardening
+
+| Doc | Task | Status |
+|---|---|---|
+| [06_a12_weak_kernel_hardening_completion.md](06_a12_weak_kernel_hardening_completion.md) | A-12 weak-kernel hardening completion and week-2 evidence | Done |
+
 ## Scope Clarification
 
 Person A scope for Phase 1:

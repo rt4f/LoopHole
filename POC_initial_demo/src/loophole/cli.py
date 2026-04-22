@@ -79,6 +79,14 @@ CANONICAL_STABLEHLO_SKETCHES = {
 }
 
 
+def _canonicalize_stablehlo_sketch_name(sketch_name: Optional[str]) -> Optional[str]:
+    if not sketch_name:
+        return sketch_name
+    if sketch_name.startswith("stablehlo.convolution"):
+        return "stablehlo.convolution"
+    return sketch_name
+
+
 def _requires_trusted_artifact_validation(profile_name: str) -> bool:
     return profile_name == "ci-strict"
 
@@ -110,25 +118,28 @@ def _compute_fixtures_fingerprint(source_hashes: Mapping[str, str]) -> str:
 def _build_canonical_stablehlo_summary(results: List[dict]) -> dict:
     required_ops = sorted(CANONICAL_STABLEHLO_SKETCHES)
     matched_required = {
-        row["sketch"]
+        _canonicalize_stablehlo_sketch_name(row.get("sketch"))
         for row in results
-        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES
+        if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
     }
 
     proved = sum(
         1
         for row in results
-        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "PROVED"
+        if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+        and row.get("state") == "PROVED"
     )
     unproved_timeout = sum(
         1
         for row in results
-        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "UNPROVED_TIMEOUT"
+        if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+        and row.get("state") == "UNPROVED_TIMEOUT"
     )
     refuted = sum(
         1
         for row in results
-        if row.get("sketch") in CANONICAL_STABLEHLO_SKETCHES and row.get("state") == "REFUTED"
+        if _canonicalize_stablehlo_sketch_name(row.get("sketch")) in CANONICAL_STABLEHLO_SKETCHES
+        and row.get("state") == "REFUTED"
     )
 
     return {

@@ -304,3 +304,18 @@ Person C deliverables implemented for C-12 through C-17:
 
 6. C-17 research-track decision package with ranked recommendation:
 - `docs/C/11_c17_research_track_decision_package.md`
+
+---
+
+## 12.12 A-12 Completion Update (2026-04-21)
+
+Person A A-12 weak-kernel hardening pack is complete.
+
+Scope closed:
+1. conv2d, dot, matvec, and reduction weak-kernel hardening.
+2. StableHLO weak-kernel convolution fixtures from Sprint-1 baseline (`conv1d`, `conv2d`) moved from refuted to proved.
+
+Evidence artifacts:
+1. `docs/A/06_a12_weak_kernel_hardening_completion.md`
+2. `docs/A/baselines/a12_week2_weakkernels_linalg_20260421.json`
+3. `docs/A/baselines/a12_week2_weakkernels_stablehlo_20260421.json`

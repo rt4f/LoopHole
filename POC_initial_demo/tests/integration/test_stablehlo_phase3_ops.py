@@ -9,6 +9,8 @@ C-08/C-09/C-10:
 from loophole.lifter import Lifter, lift, LiftResultState
 from loophole.z3_checker import CheckResult, VerificationReport
 from loophole.tests.fixtures import (
+    CONV_1D_MLIR,
+    CONV_2D_SIMPLE_MLIR,
     DOT_PRODUCT_MLIR,
     ELEMENTWISE_ADD_MLIR,
     ELEMENTWISE_SUB_MLIR,
@@ -108,6 +110,30 @@ def test_stablehlo_matvec_is_proved_and_emitted() -> None:
     assert result.emitted_mlir is not None
     assert "stablehlo.dot_general" in result.emitted_mlir
     assert "contracting_dims = [1] x [0]" in result.emitted_mlir
+
+
+def test_stablehlo_conv1d_is_proved_and_emitted() -> None:
+    result = Lifter(target="stablehlo", strict_mode=True).lift(CONV_1D_MLIR)
+
+    assert result.success, f"Expected proved stablehlo conv1d; got: {result.summary()}"
+    assert result.verification is not None
+    assert result.verification.result == CheckResult.EQUIVALENT
+    assert result.matched_sketch is not None
+    assert result.matched_sketch.name in {"stablehlo.convolution", "stablehlo.convolution_1d"}
+    assert result.emitted_mlir is not None
+    assert "stablehlo.convolution" in result.emitted_mlir
+
+
+def test_stablehlo_conv2d_is_proved_and_emitted() -> None:
+    result = Lifter(target="stablehlo", strict_mode=True).lift(CONV_2D_SIMPLE_MLIR)
+
+    assert result.success, f"Expected proved stablehlo conv2d; got: {result.summary()}"
+    assert result.verification is not None
+    assert result.verification.result == CheckResult.EQUIVALENT
+    assert result.matched_sketch is not None
+    assert result.matched_sketch.name in {"stablehlo.convolution", "stablehlo.convolution_2d"}
+    assert result.emitted_mlir is not None
+    assert "stablehlo.convolution" in result.emitted_mlir
 
 
 def test_stablehlo_reduce_sum_is_not_refuted_and_emitted() -> None:
