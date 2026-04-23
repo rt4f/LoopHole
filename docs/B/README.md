@@ -55,13 +55,19 @@ This folder contains all documentation for Person B's parallel execution lane in
 |---|---|---|
 | [16_dynamic_memref_normalization_hardening.md](16_dynamic_memref_normalization_hardening.md) | B-15: Dynamic memref normalization hardening toward IR-aware handling | Done |
 
-Future docs will be added to this folder as B-16 tasks are executed.
+### Phase 8: Reliability Burn-Down
+
+| Doc | Task | Status |
+|---|---|---|
+| [17_defect_burndown_parser_emitter_reliability_polish.md](17_defect_burndown_parser_emitter_reliability_polish.md) | B-16: Defect burn-down and parser/emitter reliability polish | Done |
+
+Future docs will be added to this folder as new B-lane tasks are defined.
 
 ## Quick Reference
 
-**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration), B-11 (real-world MLIR corpus parser compatibility pass), B-12 (unsupported-form diagnostics closure for corpus misses), B-13 (emitter validation consistency pass), B-14 (trusted-lane artifact verification enforcement in CI), B-15 (dynamic memref normalization hardening)  
-**Current focus:** Ready for B-16 follow-up hardening  
-**Test status:** 270 passing, 0 skipped  
+**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration), B-11 (real-world MLIR corpus parser compatibility pass), B-12 (unsupported-form diagnostics closure for corpus misses), B-13 (emitter validation consistency pass), B-14 (trusted-lane artifact verification enforcement in CI), B-15 (dynamic memref normalization hardening), B-16 (defect burn-down and parser/emitter reliability polish)  
+**Current focus:** B-lane 12-week scope complete; monitor reliability trend and open next-cycle tasks  
+**Test status:** 273 passing, 0 skipped  
 **Demo status:** CLI 7/10 proved, 3 partial; standalone script has stale field reference  
 
 See individual docs for detailed audit tables, disposition mappings, and implementation details.

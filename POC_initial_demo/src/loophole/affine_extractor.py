@@ -256,7 +256,7 @@ def _parse_memref_type(type_str: str) -> Tuple[List[int], str]:
             continue
         try:
             value = int(token, 10)
-            shape.append(value if value > 0 else -1)
+            shape.append(value if value >= 0 else -1)
         except ValueError:
             shape.append(-1)
     return shape, elem_type
@@ -1060,7 +1060,7 @@ class AffineExtractor:
                 {
                     shape[dim_idx]
                     for shape in observed_shapes
-                    if len(shape) > dim_idx and shape[dim_idx] > 0
+                    if len(shape) > dim_idx and shape[dim_idx] >= 0
                 }
             )
 

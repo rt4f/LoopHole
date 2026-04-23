@@ -68,3 +68,11 @@ jobs:
           pytest tests/integration/test_cli_batch_report.py::test_trusted_batch_requires_validation_even_without_flag -q
           pytest tests/integration/test_cli_batch_report.py::test_trusted_batch_fails_when_verifier_missing -q
           pytest tests/integration/test_cli_batch_report.py::test_trusted_batch_fails_on_invalid_artifact -q
+
+      - name: B-16 parser/emitter reliability guard checks
+        env:
+          LOOPHOLE_REQUIRE_MLIR_VERIFY: "1"
+        run: |
+          pytest tests/unit/test_affine_extractor.py::TestDynamicMemrefNormalizationB15::test_static_zero_dimension_is_preserved -q
+          pytest tests/unit/test_emitter.py::TestEmitterReliabilityBurnDownB16::test_emit_matmul_preserves_static_zero_dim -q
+          pytest tests/unit/test_emitter.py::TestEmitterReliabilityBurnDownB16::test_conv_attr_inference_var_times_const_without_sympy -q

@@ -319,3 +319,23 @@ Evidence artifacts:
 1. `docs/A/06_a12_weak_kernel_hardening_completion.md`
 2. `docs/A/baselines/a12_week2_weakkernels_linalg_20260421.json`
 3. `docs/A/baselines/a12_week2_weakkernels_stablehlo_20260421.json`
+
+---
+
+## 12.13 B-16 Completion Update (2026-04-23)
+
+Person B B-16 defect burn-down and parser/emitter reliability polish is complete.
+
+Scope closed:
+1. Fixed static zero-dimension normalization so parser metadata and emitted MLIR preserve `0` dimensions (no silent dynamic substitution).
+2. Hardened no-SymPy convolution coefficient fallback parsing for `N*var`, `var*N`, and signed linear-term forms.
+3. Added dedicated regression fixtures and tests for each fix.
+4. Added trusted-lane CI guard checks for B-16 regression tests.
+
+Evidence artifacts:
+1. `docs/B/17_defect_burndown_parser_emitter_reliability_polish.md`
+2. `.github/workflows/ci.yml` (`B-16 parser/emitter reliability guard checks` step)
+
+Validation snapshot:
+1. Focused parser/emitter tests: `91 passed`
+2. Full suite: `273 passed`

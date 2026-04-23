@@ -20,6 +20,7 @@ from loophole.tests.fixtures import (
     MATMUL_DYNAMIC_DIMS_MLIR,
     MATMUL_UNRANKED_MEMREF_MLIR,
     MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
+    MATMUL_ZERO_DIM_STATIC_MLIR,
     DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
 )
@@ -290,3 +291,9 @@ class TestDynamicMemrefNormalizationB15:
 
         assert info.tensor_shapes["%A"][0] == -1
         assert any("Conflicting static dimension annotations" in d.reason for d in info.diagnostics)
+
+    def test_static_zero_dimension_is_preserved(self, extractor):
+        info = extractor.extract(MATMUL_ZERO_DIM_STATIC_MLIR)
+
+        assert info.tensor_shapes["%A"] == [0, 4]
+        assert info.tensor_shapes["%C"] == [0, 5]

@@ -634,6 +634,25 @@ func.func @matmul_dynamic_conflicting_annotations(
 }
 """
 
+# Edge target: static zero dimension should remain static (not normalized to dynamic '?').
+MATMUL_ZERO_DIM_STATIC_MLIR = """\
+func.func @matmul_zero_dim_static(%A: memref<0x4xf32>, %B: memref<4x5xf32>, %C: memref<0x5xf32>) {
+  affine.for %i = 0 to 0 {
+    affine.for %j = 0 to 5 {
+      affine.for %k = 0 to 4 {
+        %a = affine.load %A[%i, %k] : memref<0x4xf32>
+        %b = affine.load %B[%k, %j] : memref<4x5xf32>
+        %c = affine.load %C[%i, %j] : memref<0x5xf32>
+        %mul = arith.mulf %a, %b : f32
+        %add = arith.addf %c, %mul : f32
+        affine.store %add, %C[%i, %j] : memref<0x5xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
 # Edge target: symbolic loop bound (%N) with unusual index arithmetic that
 # normalizes to canonical IV-based indexing.
 DOT_PRODUCT_SYMBOLIC_ARITH_MLIR = """\
@@ -671,6 +690,27 @@ func.func @conv2d_strided_dilated_reordered(%I: memref<8x8xf32>, %K: memref<2x2x
 }
 """
 
+# Edge target: conv indexing using var*const form for no-sympy fallback coefficient inference.
+CONV_2D_VAR_TIMES_CONST_INDEX_MLIR = """\
+func.func @conv2d_var_times_const_index(%I: memref<8x8xf32>, %K: memref<2x2xf32>, %O: memref<3x6xf32>) {
+  affine.for %oh = 0 to 3 {
+    affine.for %ow = 0 to 6 {
+      affine.for %kh = 0 to 2 {
+        affine.for %kw = 0 to 2 {
+          %i_val = affine.load %I[%oh * 2 + %kh * 3, %ow + %kw * 2] : memref<8x8xf32>
+          %k_val = affine.load %K[%kh, %kw] : memref<2x2xf32>
+          %o_val = affine.load %O[%oh, %ow] : memref<3x6xf32>
+          %mul = arith.mulf %i_val, %k_val : f32
+          %add = arith.addf %o_val, %mul : f32
+          affine.store %add, %O[%oh, %ow] : memref<3x6xf32>
+        }
+      }
+    }
+  }
+  return
+}
+"""
+
 # ---------------------------------------------------------------------------
 # Demo fixture dictionary — ordered for display
 # ---------------------------------------------------------------------------
@@ -690,6 +730,7 @@ DEMO_FIXTURES = {
     "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
     "matmul_unranked_memref": MATMUL_UNRANKED_MEMREF_MLIR,
     "matmul_dynamic_conflicting_annotations": MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
+    "matmul_zero_dim_static": MATMUL_ZERO_DIM_STATIC_MLIR,
     "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
     "elementwise_add":    ELEMENTWISE_ADD_MLIR,
     "elementwise_sub":    ELEMENTWISE_SUB_MLIR,
@@ -718,8 +759,10 @@ ALL_FIXTURES = {
   "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
   "matmul_unranked_memref": MATMUL_UNRANKED_MEMREF_MLIR,
   "matmul_dynamic_conflicting_annotations": MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
+  "matmul_zero_dim_static": MATMUL_ZERO_DIM_STATIC_MLIR,
   "dot_symbolic_arith": DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
   "conv2d_strided_dilated_reordered": CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
+  "conv2d_var_times_const_index": CONV_2D_VAR_TIMES_CONST_INDEX_MLIR,
   "index_variation_eq_a": INDEX_VARIATION_EQ_A_MLIR,
   "index_variation_eq_b": INDEX_VARIATION_EQ_B_MLIR,
 }

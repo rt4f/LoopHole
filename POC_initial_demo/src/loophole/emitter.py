@@ -44,14 +44,14 @@ class EmissionError(ValueError):
 def _memref_type(shape: List[int], elem: str) -> str:
     if not shape:
         return f"memref<{elem}>"
-    dims = "x".join(str(d) if d > 0 else "?" for d in shape)
+    dims = "x".join(str(d) if d >= 0 else "?" for d in shape)
     return f"memref<{dims}x{elem}>"
 
 
 def _tensor_type(shape: List[int], elem: str) -> str:
     if not shape:
         return f"tensor<{elem}>"
-    dims = "x".join(str(d) if d > 0 else "?" for d in shape)
+    dims = "x".join(str(d) if d >= 0 else "?" for d in shape)
     return f"tensor<{dims}x{elem}>"
 
 
@@ -150,12 +150,31 @@ def _infer_linear_coeff(expr: str, var: str) -> Optional[int]:
         return None
 
     if _sympy is None:
-        # Minimal fallback for simple patterns: var, N*var
-        if expr == var:
+        # Regex fallback for simple linear patterns when sympy is unavailable.
+        compact = expr.replace(" ", "")
+        if compact == var:
             return 1
-        m = re.fullmatch(rf"(\d+)\*{re.escape(var)}", expr.replace(" ", ""))
-        if m:
-            return int(m.group(1))
+
+        coeff = 0
+        for term in re.finditer(r"([+-]?)([^+-]+)", compact):
+            term_sign = -1 if term.group(1) == "-" else 1
+            part = term.group(2)
+            if part == var:
+                coeff += term_sign
+                continue
+
+            m_left = re.fullmatch(rf"(\d+)\*{re.escape(var)}", part)
+            if m_left:
+                coeff += term_sign * int(m_left.group(1))
+                continue
+
+            m_right = re.fullmatch(rf"{re.escape(var)}\*(\d+)", part)
+            if m_right:
+                coeff += term_sign * int(m_right.group(1))
+                continue
+
+        if coeff != 0:
+            return coeff
         return None
 
     try:

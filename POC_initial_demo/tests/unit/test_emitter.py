@@ -8,6 +8,7 @@ from loophole.affine_extractor import AffineExtractor
 from loophole.mlir_validator import validate_mlir_artifact
 from loophole.sketch_library import SKETCH_BY_NAME, SKETCH_LIBRARY
 from loophole.emitter import LinalgEmitter, StableHLOEmitter, EmissionError
+import loophole.emitter as emitter_module
 from loophole.tests.fixtures import (
     MATMUL_MLIR,
     TRANSPOSE_2D_MLIR,
@@ -26,9 +27,11 @@ from loophole.tests.fixtures import (
     MATMUL_DYNAMIC_DIMS_MLIR,
     MATMUL_UNRANKED_MEMREF_MLIR,
     MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
+    MATMUL_ZERO_DIM_STATIC_MLIR,
     MIXED_REALWORLD_MATMUL_MLIR,
     DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
+    CONV_2D_VAR_TIMES_CONST_INDEX_MLIR,
 )
 
 
@@ -395,3 +398,23 @@ class TestEmitterValidationConsistencyB13:
 
         with pytest.raises(EmissionError, match="Convolution attr policy failure"):
             stablehlo_emitter.emit(SKETCH_BY_NAME["stablehlo.convolution"], info)
+
+
+class TestEmitterReliabilityBurnDownB16:
+    def test_emit_matmul_preserves_static_zero_dim(self, extractor, linalg_emitter):
+        info = extractor.extract(MATMUL_ZERO_DIM_STATIC_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+
+        assert "memref<0x4xf32>" in result
+        assert "memref<0x5xf32>" in result
+
+    def test_conv_attr_inference_var_times_const_without_sympy(self, extractor, linalg_emitter, monkeypatch):
+        info = extractor.extract(CONV_2D_VAR_TIMES_CONST_INDEX_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.conv_2d"]
+
+        monkeypatch.setattr(emitter_module, "_sympy", None)
+        result = linalg_emitter.emit(sketch, info)
+
+        assert "strides   = dense<[2, 1]>" in result
+        assert "dilations = dense<[3, 2]>" in result
