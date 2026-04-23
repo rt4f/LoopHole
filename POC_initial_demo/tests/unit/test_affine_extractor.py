@@ -18,6 +18,8 @@ from loophole.tests.fixtures import (
     INDEX_VARIATION_EQ_B_MLIR,
     MIXED_REALWORLD_MATMUL_MLIR,
     MATMUL_DYNAMIC_DIMS_MLIR,
+    MATMUL_UNRANKED_MEMREF_MLIR,
+    MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
     DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
 )
@@ -273,3 +275,18 @@ class TestStressFixturesB10:
         h_expr, w_expr = i_read.index_exprs[0], i_read.index_exprs[1]
         assert "oh" in h_expr and "kh" in h_expr
         assert "ow" in w_expr and "kw" in w_expr
+
+
+class TestDynamicMemrefNormalizationB15:
+    def test_unranked_memref_rank_is_normalized_from_access_arity(self, extractor):
+        info = extractor.extract(MATMUL_UNRANKED_MEMREF_MLIR)
+
+        assert info.tensor_shapes["%A"] == [-1, -1]
+        assert info.tensor_shapes["%B"] == [-1, -1]
+        assert info.tensor_shapes["%C"] == [-1, -1]
+
+    def test_conflicting_dynamic_dim_annotations_are_kept_dynamic(self, extractor):
+        info = extractor.extract(MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR)
+
+        assert info.tensor_shapes["%A"][0] == -1
+        assert any("Conflicting static dimension annotations" in d.reason for d in info.diagnostics)

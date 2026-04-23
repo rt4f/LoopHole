@@ -236,6 +236,10 @@ def _parse_memref_type(type_str: str) -> Tuple[List[int], str]:
 
     # Strip layout/affine details if present.
     main = payload.split(",", 1)[0].strip()
+    if main == "*":
+        return [], "f32"
+    if main.startswith("*x"):
+        return [], main.split("x", 1)[1].strip() or "f32"
     if "x" not in main:
         return [], main or "f32"
 
@@ -247,11 +251,12 @@ def _parse_memref_type(type_str: str) -> Tuple[List[int], str]:
     shape_tokens = parts[:-1]
     shape: List[int] = []
     for token in shape_tokens:
-        if token == "?":
+        if token in {"?", "-1", "*"}:
             shape.append(-1)
             continue
         try:
-            shape.append(int(token, 10))
+            value = int(token, 10)
+            shape.append(value if value > 0 else -1)
         except ValueError:
             shape.append(-1)
     return shape, elem_type
@@ -349,16 +354,16 @@ class AffineExtractor:
             induction_vars=induction_vars,
             writes=writes,
         )
-        tensor_shapes, tensor_types = self._resolve_tensor_metadata(func_args, reads, writes)
-        element_type = self._dominant_element_type(tensor_types)
-        reduction_vars, parallel_vars = self._classify_iv_roles(induction_vars, writes)
-        has_accum, accum_op = self._detect_accumulation(compute_ops, reads, writes)
-
         bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]] = {}
         for iv, (lo, hi) in bounds_raw.items():
             lo_r = self._resolve_bound(lo, const_map)
             hi_r = self._resolve_bound(hi, const_map)
             bounds[iv] = (lo_r, hi_r)
+
+        tensor_shapes, tensor_types = self._resolve_tensor_metadata(func_args, reads, writes)
+        element_type = self._dominant_element_type(tensor_types)
+        reduction_vars, parallel_vars = self._classify_iv_roles(induction_vars, writes)
+        has_accum, accum_op = self._detect_accumulation(compute_ops, reads, writes)
 
         return LoopNestInfo(
             func_name=func_name,
@@ -989,22 +994,109 @@ class AffineExtractor:
         reads: List[AccessPattern],
         writes: List[AccessPattern],
     ) -> Tuple[Dict[str, List[int]], Dict[str, str]]:
+        observed_shapes: Dict[str, List[List[int]]] = {}
+        observed_types: Dict[str, List[str]] = {}
+        observed_ranks: Dict[str, List[int]] = {}
+
+        for arg_name, arg_type in func_args.items():
+            if "memref<" not in arg_type:
+                continue
+            shape, elem = _parse_memref_type(arg_type)
+            observed_shapes.setdefault(arg_name, []).append(shape)
+            observed_types.setdefault(arg_name, []).append(elem)
+
+        for acc in reads + writes:
+            observed_shapes.setdefault(acc.tensor_name, []).append(acc.shape)
+            observed_types.setdefault(acc.tensor_name, []).append(acc.element_type)
+            if acc.index_exprs:
+                observed_ranks.setdefault(acc.tensor_name, []).append(len(acc.index_exprs))
+
+        all_tensors = set(observed_shapes.keys()) | set(observed_types.keys()) | set(observed_ranks.keys())
         shapes: Dict[str, List[int]] = {}
         types: Dict[str, str] = {}
 
-        for arg_name, arg_type in func_args.items():
-            if "memref<" in arg_type:
-                shape, elem = _parse_memref_type(arg_type)
-                shapes[arg_name] = shape
-                types[arg_name] = elem
-
-        for acc in reads + writes:
-            if acc.tensor_name not in shapes:
-                shapes[acc.tensor_name] = acc.shape
-            if acc.tensor_name not in types:
-                types[acc.tensor_name] = acc.element_type
+        for tensor_name in sorted(all_tensors):
+            shapes[tensor_name] = self._normalize_tensor_shape_metadata(
+                tensor_name=tensor_name,
+                observed_shapes=observed_shapes.get(tensor_name, []),
+                observed_ranks=observed_ranks.get(tensor_name, []),
+            )
+            elem = self._normalize_tensor_element_type(
+                tensor_name=tensor_name,
+                observed_types=observed_types.get(tensor_name, []),
+            )
+            if elem:
+                types[tensor_name] = elem
 
         return shapes, types
+
+    def _normalize_tensor_shape_metadata(
+        self,
+        tensor_name: str,
+        observed_shapes: List[List[int]],
+        observed_ranks: List[int],
+    ) -> List[int]:
+        rank_sources = [len(shape) for shape in observed_shapes if shape] + [r for r in observed_ranks if r > 0]
+        if not rank_sources:
+            return []
+
+        rank_frequency = Counter(rank_sources)
+        rank = sorted(rank_frequency.items(), key=lambda item: (-item[1], -item[0]))[0][0]
+        if len(rank_frequency) > 1:
+            self._add_diagnostic(
+                "warning",
+                "_resolve_tensor_metadata",
+                f"Ambiguous tensor rank observations for '{tensor_name}'",
+                str(rank_sources),
+                guidance=(
+                    f"Using rank {rank} based on majority observation; conflicting ranks were "
+                    f"{sorted(rank_frequency.keys())}."
+                ),
+            )
+
+        normalized = [-1] * rank
+        for dim_idx in range(rank):
+            static_values = sorted(
+                {
+                    shape[dim_idx]
+                    for shape in observed_shapes
+                    if len(shape) > dim_idx and shape[dim_idx] > 0
+                }
+            )
+
+            if len(static_values) == 1:
+                normalized[dim_idx] = static_values[0]
+            elif len(static_values) > 1:
+                self._add_diagnostic(
+                    "warning",
+                    "_resolve_tensor_metadata",
+                    f"Conflicting static dimension annotations for '{tensor_name}'",
+                    f"dim={dim_idx}, candidates={static_values}",
+                    guidance="Keeping this dimension dynamic to avoid unstable matcher/emitter behavior.",
+                )
+
+        return normalized
+
+    def _normalize_tensor_element_type(
+        self,
+        tensor_name: str,
+        observed_types: List[str],
+    ) -> str:
+        cleaned = [t.strip() for t in observed_types if t and t.strip()]
+        if not cleaned:
+            return ""
+
+        counts = Counter(cleaned)
+        winner = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        if len(counts) > 1:
+            self._add_diagnostic(
+                "warning",
+                "_resolve_tensor_metadata",
+                f"Conflicting tensor element types for '{tensor_name}'",
+                str(sorted(counts.keys())),
+                guidance=f"Using dominant observed type '{winner}'.",
+            )
+        return winner
 
     def _dominant_element_type(self, tensor_types: Dict[str, str]) -> str:
         if not tensor_types:

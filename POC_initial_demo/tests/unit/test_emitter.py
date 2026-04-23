@@ -24,6 +24,8 @@ from loophole.tests.fixtures import (
     REDUCE_SUM_COLWISE_MLIR,
     REDUCE_MAX_MLIR,
     MATMUL_DYNAMIC_DIMS_MLIR,
+    MATMUL_UNRANKED_MEMREF_MLIR,
+    MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
     MIXED_REALWORLD_MATMUL_MLIR,
     DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
@@ -235,6 +237,18 @@ class TestLinalgEmitter:
 
     def test_emit_dynamic_dim_matmul_uses_symbolic_dims(self, extractor, linalg_emitter):
         info = extractor.extract(MATMUL_DYNAMIC_DIMS_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "memref<?x?xf32>" in result
+
+    def test_emit_unranked_memref_matmul_normalizes_to_ranked_dynamic(self, extractor, linalg_emitter):
+        info = extractor.extract(MATMUL_UNRANKED_MEMREF_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+        result = linalg_emitter.emit(sketch, info)
+        assert "memref<?x?xf32>" in result
+
+    def test_emit_conflicting_dynamic_dim_annotations_remain_dynamic(self, extractor, linalg_emitter):
+        info = extractor.extract(MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR)
         sketch = SKETCH_BY_NAME["linalg.matmul"]
         result = linalg_emitter.emit(sketch, info)
         assert "memref<?x?xf32>" in result

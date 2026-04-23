@@ -589,6 +589,51 @@ func.func @matmul_dynamic_dims(%A: memref<?x?xf32>, %B: memref<?x?xf32>, %C: mem
 }
 """
 
+# Edge target: unranked memref annotations; parser should normalize rank from IR index arity.
+MATMUL_UNRANKED_MEMREF_MLIR = """\
+func.func @matmul_unranked_memref(%A: memref<*xf32>, %B: memref<*xf32>, %C: memref<*xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      affine.for %k = 0 to 4 {
+        %a = affine.load %A[%i, %k] : memref<*xf32>
+        %b = affine.load %B[%k, %j] : memref<*xf32>
+        %c = affine.load %C[%i, %j] : memref<*xf32>
+        %mul = arith.mulf %a, %b : f32
+        %add = arith.addf %c, %mul : f32
+        affine.store %add, %C[%i, %j] : memref<*xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
+# Edge target: conflicting static annotations for a dynamic tensor dimension.
+MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR = """\
+func.func @matmul_dynamic_conflicting_annotations(
+  %A: memref<?x?xf32>,
+  %B: memref<?x?xf32>,
+  %C: memref<?x?xf32>
+) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      affine.for %k = 0 to 4 {
+        %a0 = affine.load %A[%i, %k] : memref<4x?xf32>
+        %a1 = affine.load %A[%i, %k] : memref<8x?xf32>
+        %b = affine.load %B[%k, %j] : memref<?x?xf32>
+        %c = affine.load %C[%i, %j] : memref<?x?xf32>
+        %m0 = arith.mulf %a0, %b : f32
+        %m1 = arith.mulf %a1, %b : f32
+        %s0 = arith.addf %m0, %m1 : f32
+        %s1 = arith.addf %c, %s0 : f32
+        affine.store %s1, %C[%i, %j] : memref<?x?xf32>
+      }
+    }
+  }
+  return
+}
+"""
+
 # Edge target: symbolic loop bound (%N) with unusual index arithmetic that
 # normalizes to canonical IV-based indexing.
 DOT_PRODUCT_SYMBOLIC_ARITH_MLIR = """\
@@ -643,6 +688,8 @@ DEMO_FIXTURES = {
     "dot_symbolic_arith": DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
     "matvec":             MATVEC_MLIR,
     "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
+    "matmul_unranked_memref": MATMUL_UNRANKED_MEMREF_MLIR,
+    "matmul_dynamic_conflicting_annotations": MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
     "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
     "elementwise_add":    ELEMENTWISE_ADD_MLIR,
     "elementwise_sub":    ELEMENTWISE_SUB_MLIR,
@@ -669,6 +716,8 @@ ALL_FIXTURES = {
   "mixed_scf_affine_reduction": MIXED_SCF_AFFINE_REDUCTION_MLIR,
   "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
   "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
+  "matmul_unranked_memref": MATMUL_UNRANKED_MEMREF_MLIR,
+  "matmul_dynamic_conflicting_annotations": MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
   "dot_symbolic_arith": DOT_PRODUCT_SYMBOLIC_ARITH_MLIR,
   "conv2d_strided_dilated_reordered": CONV_2D_STRIDED_DILATED_REORDERED_MLIR,
   "index_variation_eq_a": INDEX_VARIATION_EQ_A_MLIR,

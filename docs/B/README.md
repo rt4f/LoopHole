@@ -49,13 +49,19 @@ This folder contains all documentation for Person B's parallel execution lane in
 |---|---|---|
 | [14_trusted_lane_artifact_verification_enforcement_ci.md](14_trusted_lane_artifact_verification_enforcement_ci.md) | B-14: Trusted-lane artifact verification enforcement in CI | Done |
 
-Future docs will be added to this folder as B-15 and B-16 tasks are executed.
+### Phase 7: Dynamic Memref Hardening
+
+| Doc | Task | Status |
+|---|---|---|
+| [16_dynamic_memref_normalization_hardening.md](16_dynamic_memref_normalization_hardening.md) | B-15: Dynamic memref normalization hardening toward IR-aware handling | Done |
+
+Future docs will be added to this folder as B-16 tasks are executed.
 
 ## Quick Reference
 
-**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration), B-11 (real-world MLIR corpus parser compatibility pass), B-12 (unsupported-form diagnostics closure for corpus misses), B-13 (emitter validation consistency pass), B-14 (trusted-lane artifact verification enforcement in CI)  
-**Current focus:** Ready for B-15 dynamic-memref hardening  
-**Test status:** 252 passing, 1 skipped  
+**Completed tasks:** B-01 (fallback audit), B-02 (diagnostics), B-03 (mixed affine/scf parsing), B-04 (index normalization), B-05 (strict emitter metadata), B-06 (transpose permutation validation), B-07 (conv attribute inference/propagation policy), B-08 (artifact-level emitted MLIR validation pipeline), B-09 (StableHLO emitter hook/mapping sync and coverage), B-10 (fixture realism stress coverage for parser/emitter/integration), B-11 (real-world MLIR corpus parser compatibility pass), B-12 (unsupported-form diagnostics closure for corpus misses), B-13 (emitter validation consistency pass), B-14 (trusted-lane artifact verification enforcement in CI), B-15 (dynamic memref normalization hardening)  
+**Current focus:** Ready for B-16 follow-up hardening  
+**Test status:** 270 passing, 0 skipped  
 **Demo status:** CLI 7/10 proved, 3 partial; standalone script has stale field reference  
 
 See individual docs for detailed audit tables, disposition mappings, and implementation details.
