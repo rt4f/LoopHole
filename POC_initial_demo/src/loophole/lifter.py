@@ -219,12 +219,14 @@ class Lifter:
         top_k: int = 3,
         strict_mode: bool = False,
         verbose: bool = False,
+        parametric_mode: bool = False,
     ):
         self.target = target
         self.z3_timeout_ms = z3_timeout_ms
         self.top_k = top_k
         self.strict_mode = strict_mode
         self.verbose = verbose
+        self.parametric_mode = parametric_mode
         self.disagreement_confidence_threshold = 0.8
 
         self._extractor = AffineExtractor()
@@ -243,6 +245,7 @@ class Lifter:
         strict_mode: Optional[bool] = None,
         top_k: int = 3,
         verbose: bool = False,
+        parametric_mode: bool = False,
         env: Optional[Mapping[str, str]] = None,
     ) -> "Lifter":
         """
@@ -259,6 +262,7 @@ class Lifter:
             top_k=top_k,
             strict_mode=resolved_strict,
             verbose=verbose,
+            parametric_mode=parametric_mode,
         )
 
     # ------------------------------------------------------------------
@@ -338,6 +342,12 @@ class Lifter:
             )
 
         sketch, report, sympy_conf = best_result
+
+        # A-15: shape-parametric proof augmentation (non-blocking — never changes concrete result)
+        if self.parametric_mode and report.result == CheckResult.EQUIVALENT:
+            param_report = self._z3._verify_parametric(loop, sketch)
+            report.parametric_result = param_report.result
+            report.parametric_notes = param_report.notes
 
         if report.result == CheckResult.NOT_EQUIVALENT:
             return LiftResult(

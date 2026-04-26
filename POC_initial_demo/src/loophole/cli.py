@@ -376,6 +376,10 @@ def _print_cgeist_error_and_exit(exc: PolygeistFrontendError) -> None:
 @click.option("--report", is_flag=True, help="Print a summary verification report")
 @click.option("--no-verify", is_flag=True,
               help="Skip Z3 verification (emit based on SymPy match only)")
+@click.option("--parametric", is_flag=True,
+              help="After a successful concrete proof, attempt shape-parametric proof (A-15 pilot)")
+@click.option("--show-replay", is_flag=True,
+              help="After a NOT_EQUIVALENT result, replay the counterexample (A-14 triage)")
 def lift_cmd(
     input_file: str,
     output: Optional[str],
@@ -387,6 +391,8 @@ def lift_cmd(
     verbose: bool,
     report: bool,
     no_verify: bool,
+    parametric: bool,
+    show_replay: bool,
 ):
     """
     Lift an MLIR Affine IR file to a high-level tensor dialect.
@@ -415,11 +421,21 @@ def lift_cmd(
             strict_mode=True if strict else None,
             top_k=top_k,
             verbose=verbose,
+            parametric_mode=parametric,
         )
         result = lifter.lift(src)
         progress.advance(task)
 
     _print_lift_result(result, output, report, verbose, strict_mode=effective_strict)
+
+    if show_replay and result.verification and result.verification.counterexample_bindings:
+        from loophole.replay_checker import replay_counterexample
+        loop_info = result.loop_info
+        sk = result.matched_sketch
+        if loop_info and sk:
+            ce_report = replay_counterexample(loop_info, sk, result.verification)
+            if ce_report:
+                _print_counterexample_report(ce_report)
 
 
 def _print_lift_result(
@@ -496,7 +512,34 @@ def _print_verification_report(v):
     table.add_row("Notes", v.notes or "-")
     if v.z3_model:
         table.add_row("Counter-example", v.z3_model[:200])
+    if v.parametric_result is not None:
+        table.add_row("Parametric result", v.parametric_result.value)
+        table.add_row("Parametric notes", v.parametric_notes or "-")
     console.print(table)
+
+
+def _print_counterexample_report(ce_report) -> None:
+    """Print a counterexample triage report to the console (A-14)."""
+    from loophole.replay_checker import CounterexampleReport
+    lines = [
+        "[bold]Counterexample Replay[/bold]",
+        "",
+        f"[cyan]IV values:[/cyan] {ce_report.iv_values}",
+        f"[cyan]Verdict:[/cyan] {ce_report.verdict_summary}",
+    ]
+    if ce_report.source_access_pattern:
+        lines.append("[cyan]Source accesses:[/cyan]")
+        for tensor, idxs in ce_report.source_access_pattern.items():
+            lines.append(f"  {tensor}: {idxs[:4]}")
+    if ce_report.sketch_access_pattern:
+        lines.append("[cyan]Sketch accesses:[/cyan]")
+        for tensor, idxs in ce_report.sketch_access_pattern.items():
+            lines.append(f"  {tensor}: {idxs[:4]}")
+    if ce_report.diverging_cells:
+        lines.append(f"[red]Diverging cells:[/red] {ce_report.diverging_cells[:5]}")
+    if ce_report.parse_errors:
+        lines.append(f"[yellow]Parse errors:[/yellow] {ce_report.parse_errors[:3]}")
+    console.print(Panel("\n".join(lines), title="Counterexample Triage", border_style="yellow"))
 
 
 # ---------------------------------------------------------------------------
@@ -1389,6 +1432,88 @@ def demo(
 
     if effective_strict and (partial > 0 or refuted > 0):
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# loophole replay  (A-14: counterexample triage)
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("report_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--entry", "entry_index", type=int, default=0, show_default=True,
+              help="0-based index into the JSON report results array to replay")
+@click.option("--verbose", "-v", is_flag=True)
+def replay(report_file: str, entry_index: int, verbose: bool):
+    """
+    Replay a counterexample from a batch JSON report entry (A-14 triage).
+
+    REPORT_FILE: JSON batch report produced by 'loophole batch --report'.
+
+    Loads the specified entry, parses counterexample_bindings, and simulates
+    both the source loop and sketch at those concrete values to explain why
+    the proof failed.
+    """
+    from loophole.affine_extractor import AffineExtractor
+    from loophole.replay_checker import replay_counterexample
+    from loophole.z3_checker import VerificationReport, CheckResult
+
+    raw = Path(report_file).read_text(encoding="utf-8")
+    payload = json.loads(raw)
+
+    results = payload.get("results", payload) if isinstance(payload, dict) else payload
+    if not isinstance(results, list) or entry_index >= len(results):
+        console.print(f"[red]Entry {entry_index} not found in report (total: {len(results) if isinstance(results, list) else '?'})[/red]")
+        sys.exit(1)
+
+    entry = results[entry_index]
+    bindings: Dict[str, str] = entry.get("counterexample_bindings", {})
+
+    if not bindings:
+        console.print("[yellow]Entry has no counterexample bindings — nothing to replay.[/yellow]")
+        return
+
+    src_file = entry.get("file")
+    if not src_file or not Path(src_file).exists():
+        console.print(f"[red]Source file '{src_file}' not found — cannot reconstruct loop info.[/red]")
+        sys.exit(1)
+
+    mlir_text = Path(src_file).read_text(encoding="utf-8")
+    extractor = AffineExtractor()
+    try:
+        loop = extractor.extract(mlir_text)
+    except Exception as exc:
+        console.print(f"[red]Failed to parse source MLIR: {exc}[/red]")
+        sys.exit(1)
+
+    sketch_name = entry.get("sketch")
+    sketch = SKETCH_BY_NAME.get(sketch_name) if sketch_name else None
+    if sketch is None:
+        console.print(f"[red]Sketch '{sketch_name}' not found in library — cannot simulate sketch side.[/red]")
+        sys.exit(1)
+
+    vreport = VerificationReport(
+        result=CheckResult[entry.get("z3", "UNKNOWN")],
+        sketch_name=sketch_name or "",
+        elapsed_ms=float(entry.get("elapsed_ms", 0.0)),
+        counterexample_bindings=bindings,
+        failed_implication=entry.get("failed_implication"),
+        mismatch_summary=entry.get("mismatch_summary"),
+    )
+
+    ce = replay_counterexample(loop, sketch, vreport)
+    if ce is None:
+        console.print("[yellow]No counterexample available to replay.[/yellow]")
+        return
+
+    _print_counterexample_report(ce)
+
+    if verbose:
+        console.print("\n[dim]Full source access pattern:[/dim]")
+        for tensor, idxs in ce.source_access_pattern.items():
+            console.print(f"  {tensor}: {idxs}")
+        console.print("\n[dim]Full sketch access pattern:[/dim]")
+        for tensor, idxs in ce.sketch_access_pattern.items():
+            console.print(f"  {tensor}: {idxs}")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ concrete sum — this is dramatically faster than quantified reasoning.
 
 from __future__ import annotations
 
+import dataclasses
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,6 +57,29 @@ class CheckResult(Enum):
     ENCODE_ERROR = "ENCODE_ERROR"
 
 
+class ReductionPatternKind(Enum):
+    """Classification of reduction patterns for diagnostic and routing purposes (A-13)."""
+    CONCRETE_UNROLL            = "CONCRETE_UNROLL"
+    SINGLE_SYMBOLIC_INFERRED   = "SINGLE_SYMBOLIC_INFERRED"
+    MULTI_SYMBOLIC_INFERRED    = "MULTI_SYMBOLIC_INFERRED"
+    SINGLE_SYMBOLIC_UNINFERRED = "SINGLE_SYMBOLIC_UNINFERRED"
+    MULTI_SYMBOLIC_UNINFERRED  = "MULTI_SYMBOLIC_UNINFERRED"
+
+
+class _UnsupportedReductionForm(Exception):
+    """Internal: raised when a multi-reduction pattern cannot be symbolically encoded."""
+    def __init__(
+        self,
+        kind: ReductionPatternKind,
+        reason: str,
+        reduction_vars: List[str],
+    ) -> None:
+        super().__init__(reason)
+        self.kind = kind
+        self.reason = reason
+        self.reduction_vars = reduction_vars
+
+
 @dataclass
 class VerificationReport:
     result: CheckResult
@@ -67,6 +92,9 @@ class VerificationReport:
     sympy_confidence: Optional[float] = None
     sympy_z3_disagreement: Optional[str] = None
     notes: str = ""
+    # A-15: shape-parametric proof augmentation fields (None = not attempted)
+    parametric_result: Optional[CheckResult] = None
+    parametric_notes: str = ""
 
     @property
     def proved(self) -> bool:
@@ -855,8 +883,116 @@ class Z3EquivalenceChecker:
                 symbolic_limit,
             )
 
-        else:
-            return self._recfunc_reduction(loop, iv_z3, tensor_funcs, bounds)
+        # A-13: try multi-reduction guarded unroll before falling to recfunc
+        multi_limits = self._symbolic_reduction_upper_bound_multi(loop, bounds)
+        if multi_limits is not None:
+            return self._guarded_symbolic_unroll_reduction_multi(
+                loop, iv_z3, tensor_funcs, bounds, multi_limits
+            )
+
+        return self._recfunc_reduction(loop, iv_z3, tensor_funcs, bounds)
+
+    def _classify_reduction_pattern(
+        self,
+        loop: LoopNestInfo,
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+    ) -> Tuple[ReductionPatternKind, str]:
+        """Classify the reduction pattern for diagnostics (A-13)."""
+        red_ivs = loop.reduction_vars
+        n = len(red_ivs)
+
+        # All concrete and within threshold?
+        can_unroll = all(
+            self._bound_as_int(bounds.get(iv, (0, 0))[0]) is not None
+            and self._bound_as_int(bounds.get(iv, (0, 0))[1]) is not None
+            and (
+                (self._bound_as_int(bounds.get(iv, (0, 0))[1]) or 0)
+                - (self._bound_as_int(bounds.get(iv, (0, 0))[0]) or 0)
+            ) <= self.unroll_threshold
+            for iv in red_ivs
+        )
+        if can_unroll:
+            return ReductionPatternKind.CONCRETE_UNROLL, (
+                f"all {n} reduction dim(s) have concrete integer bounds within unroll threshold"
+            )
+
+        multi_limits = self._symbolic_reduction_upper_bound_multi(loop, bounds)
+        if multi_limits is not None:
+            if n == 1:
+                return ReductionPatternKind.SINGLE_SYMBOLIC_INFERRED, (
+                    "single reduction dim; upper bound inferred from tensor extents"
+                )
+            return ReductionPatternKind.MULTI_SYMBOLIC_INFERRED, (
+                f"multi-reduction ({n} dims); upper bounds inferred from tensor extents for all dims"
+            )
+
+        if n == 1:
+            return ReductionPatternKind.SINGLE_SYMBOLIC_UNINFERRED, (
+                "single reduction dim; upper bound not inferable from tensor shapes — recfunc path"
+            )
+        return ReductionPatternKind.MULTI_SYMBOLIC_UNINFERRED, (
+            f"multi-reduction ({n} dims); upper bounds not inferable from tensor shapes — unsupported"
+        )
+
+    def _symbolic_reduction_upper_bound_multi(
+        self,
+        loop: LoopNestInfo,
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+    ) -> Optional[Dict[str, int]]:
+        """
+        Infer finite upper bounds for ALL reduction IVs from static tensor extents (A-13).
+        Returns a {red_iv: upper_int} mapping, or None if any IV fails or product exceeds limit.
+        """
+        result: Dict[str, int] = {}
+
+        for red_iv in loop.reduction_vars:
+            lo_raw, hi_raw = bounds.get(red_iv, (0, 1))
+            lo = self._bound_as_int(lo_raw)
+            if lo is None:
+                return None
+
+            concrete_hi = self._bound_as_int(hi_raw)
+            if concrete_hi is not None:
+                if concrete_hi - lo > self.unroll_threshold:
+                    return None
+                result[red_iv] = concrete_hi
+                continue
+
+            upper: Optional[int] = None
+            for access in list(loop.reads) + list(loop.writes):
+                shape = loop.tensor_shapes.get(access.tensor_name, access.shape)
+                if not shape:
+                    continue
+                for dim_idx, idx_expr in enumerate(access.index_exprs):
+                    if dim_idx >= len(shape):
+                        continue
+                    extent = shape[dim_idx]
+                    if extent <= 0:
+                        continue
+                    parsed = self._parse_simple_iv_offset(idx_expr)
+                    if parsed is None:
+                        continue
+                    iv_name, offset = parsed
+                    if iv_name != red_iv:
+                        continue
+                    candidate = extent - offset
+                    upper = candidate if upper is None else min(upper, candidate)
+
+            if upper is None:
+                return None
+            if upper - lo > self.unroll_threshold:
+                return None
+            result[red_iv] = upper
+
+        # Guard against cartesian product blowup (e.g. 32x32 = 1024 terms)
+        total_iters = math.prod(
+            result[iv] - (self._bound_as_int(bounds.get(iv, (0, 0))[0]) or 0)
+            for iv in loop.reduction_vars
+        )
+        if total_iters > self.unroll_threshold ** 2:
+            return None
+
+        return result
 
     def _symbolic_reduction_upper_bound(
         self,
@@ -868,49 +1004,21 @@ class Z3EquivalenceChecker:
 
         This is used to build guarded unrolled sums for symbolic bounds, which is
         typically more solver-friendly than recursive definitions.
+        Delegates to _symbolic_reduction_upper_bound_multi for the single-IV case.
         """
         if len(loop.reduction_vars) != 1:
             return None
 
-        red_iv = loop.reduction_vars[0]
-        lo_raw, hi_raw = bounds.get(red_iv, (0, 1))
-        lo = self._bound_as_int(lo_raw)
-        if lo is None:
+        result = self._symbolic_reduction_upper_bound_multi(loop, bounds)
+        if result is None:
             return None
 
+        red_iv = loop.reduction_vars[0]
+        hi_raw = bounds.get(red_iv, (0, 1))[1]
         if self._bound_as_int(hi_raw) is not None:
             return None
 
-        upper: Optional[int] = None
-        for access in list(loop.reads) + list(loop.writes):
-            shape = loop.tensor_shapes.get(access.tensor_name, access.shape)
-            if not shape:
-                continue
-
-            for dim_idx, idx_expr in enumerate(access.index_exprs):
-                if dim_idx >= len(shape):
-                    continue
-                extent = shape[dim_idx]
-                if extent <= 0:
-                    continue
-
-                parsed = self._parse_simple_iv_offset(idx_expr)
-                if parsed is None:
-                    continue
-
-                iv_name, offset = parsed
-                if iv_name != red_iv:
-                    continue
-
-                candidate = extent - offset
-                upper = candidate if upper is None else min(upper, candidate)
-
-        if upper is None:
-            return None
-
-        if upper - lo > self.unroll_threshold:
-            return None
-        return upper
+        return result.get(red_iv)
 
     def _guarded_symbolic_unroll_reduction(
         self,
@@ -936,6 +1044,57 @@ class Z3EquivalenceChecker:
             local_iv[red_iv] = IntVal(k)
             term = self._body_term_at(loop, local_iv, tensor_funcs, cp)
             active = IntVal(k) < hi_expr
+
+            if cp in (ComputePayloadType.MULTIPLY_ACCUMULATE, ComputePayloadType.ACCUMULATE_ADD):
+                total = If(active, total + term, total)
+            elif cp == ComputePayloadType.ACCUMULATE_MAX:
+                candidate = If(term > total, term, total)
+                total = If(active, candidate, total)
+            else:
+                total = If(active, total + term, total)
+
+        return total
+
+    def _guarded_symbolic_unroll_reduction_multi(
+        self,
+        loop: LoopNestInfo,
+        iv_z3: Dict[str, ArithRef],
+        tensor_funcs: Dict[str, Any],
+        bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]],
+        upper_bounds: Dict[str, int],
+    ) -> ArithRef:
+        """
+        Build a multi-reduction as a cartesian-product guarded sum (A-13).
+        For each combination (k0, k1, ...) with k_i in [lo_i, upper_bounds[iv_i]),
+        adds If(k0 < hi_expr_0 AND k1 < hi_expr_1 AND ..., term, 0) to the total.
+        """
+        cp = self._infer_compute_payload(loop)
+        total: ArithRef = RealVal(-1e30) if cp == ComputePayloadType.ACCUMULATE_MAX else RealVal(0)
+
+        red_ivs = loop.reduction_vars
+
+        def iter_red_ranges(idx: int, current: Dict[str, int]):
+            if idx == len(red_ivs):
+                yield dict(current)
+                return
+            iv = red_ivs[idx]
+            lo_i = self._bound_as_int(bounds.get(iv, (0, 0))[0]) or 0
+            hi_i = upper_bounds[iv]
+            for v in range(lo_i, hi_i):
+                current[iv] = v
+                yield from iter_red_ranges(idx + 1, current)
+                del current[iv]
+
+        for red_vals in iter_red_ranges(0, {}):
+            local_iv = dict(iv_z3)
+            guards: List[BoolRef] = []
+            for iv, v in red_vals.items():
+                local_iv[iv] = IntVal(v)
+                hi_expr = self._bound_expr(bounds.get(iv, (0, 1))[1])
+                guards.append(IntVal(v) < hi_expr)
+
+            active = And(*guards) if len(guards) > 1 else guards[0]
+            term = self._body_term_at(loop, local_iv, tensor_funcs, cp)
 
             if cp in (ComputePayloadType.MULTIPLY_ACCUMULATE, ComputePayloadType.ACCUMULATE_ADD):
                 total = If(active, total + term, total)
@@ -1052,10 +1211,8 @@ class Z3EquivalenceChecker:
                  acc(par..., 0) = 0
         """
         if len(loop.reduction_vars) != 1:
-            raise ValueError(
-                "Symbolic/large reduction path requires a single reduction dimension; "
-                "use concrete bounds for multi-reduction kernels."
-            )
+            kind, reason = self._classify_reduction_pattern(loop, bounds)
+            raise _UnsupportedReductionForm(kind, reason, loop.reduction_vars)
 
         red_iv = loop.reduction_vars[0]
         lo, hi = bounds.get(red_iv, (0, 1))
@@ -1307,11 +1464,53 @@ class Z3EquivalenceChecker:
 
             return total
 
+        # A-13: multi-reduction guarded unroll for sketch side
+        multi_limits = self._symbolic_reduction_upper_bound_multi(loop, bounds)
+        if multi_limits is not None and len(red_dims) == len(loop.reduction_vars):
+            total: ArithRef = RealVal(-1e30) if cp == ComputePayloadType.ACCUMULATE_MAX else RealVal(0)
+
+            def iter_sketch_multi_red(idx: int, current: Dict[str, int]):
+                if idx == len(loop.reduction_vars):
+                    yield dict(current)
+                    return
+                loop_iv = loop.reduction_vars[idx]
+                sketch_iv = red_dims[idx]
+                lo_i = self._bound_as_int(bounds.get(loop_iv, (0, 0))[0]) or 0
+                for v in range(lo_i, multi_limits[loop_iv]):
+                    current[sketch_iv] = v
+                    yield from iter_sketch_multi_red(idx + 1, current)
+                    del current[sketch_iv]
+
+            for values in iter_sketch_multi_red(0, {}):
+                local_iv = dict(sketch_iv_z3)
+                guards: List[BoolRef] = []
+                for idx2, loop_iv in enumerate(loop.reduction_vars):
+                    sk_iv = red_dims[idx2]
+                    val = values[sk_iv]
+                    local_iv[sk_iv] = IntVal(val)
+                    hi_expr = self._bound_expr(bounds.get(loop_iv, (0, 1))[1])
+                    guards.append(IntVal(val) < hi_expr)
+                active = And(*guards) if len(guards) > 1 else guards[0]
+
+                if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    b = self._read_at(sketch, 1, local_iv, sketch_funcs)
+                    total = If(active, total + (a * b), total)
+                elif cp == ComputePayloadType.ACCUMULATE_ADD:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, total + a, total)
+                elif cp == ComputePayloadType.ACCUMULATE_MAX:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, If(a > total, a, total), total)
+                else:
+                    a = self._read_at(sketch, 0, local_iv, sketch_funcs)
+                    total = If(active, total + a, total)
+
+            return total
+
         if len(loop.reduction_vars) != 1:
-            raise ValueError(
-                "Symbolic sketch reduction requires a single reduction dimension; "
-                "multi-reduction symbolic proofs are not yet supported."
-            )
+            kind, reason = self._classify_reduction_pattern(loop, bounds)
+            raise _UnsupportedReductionForm(kind, reason, loop.reduction_vars)
 
         red_loop_iv = loop.reduction_vars[0]
         red_sketch_iv = red_dims[0]
@@ -1371,6 +1570,19 @@ class Z3EquivalenceChecker:
         """
         try:
             report = self._verify_concrete(loop, sketch)
+        except _UnsupportedReductionForm as exc:
+            return VerificationReport(
+                result=CheckResult.ENCODE_ERROR,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes=(
+                    f"ENCODE_ERROR: unsupported_form=multi_reduction_symbolic_uninferable | "
+                    f"pattern={exc.kind.value} | reason={exc.reason} | "
+                    f"reduction_vars={exc.reduction_vars} | "
+                    f"hint=Use concrete integer bounds or ensure all tensor shapes are fully "
+                    f"static so upper bounds can be inferred for each reduction dimension."
+                ),
+            )
         except ValueError as exc:
             return VerificationReport(
                 result=CheckResult.UNKNOWN,
@@ -1454,3 +1666,71 @@ class Z3EquivalenceChecker:
         if not loop.compute_ops:
             return ComputePayloadType.COPY
         return ComputePayloadType.COPY
+
+    # ------------------------------------------------------------------
+    # A-15: Shape-parametric proof pilot
+    # ------------------------------------------------------------------
+
+    _SHAPE_DIM_NAMES = "MNKPQRS"
+
+    def _collect_shape_dims(self, loop: LoopNestInfo) -> Dict[int, str]:
+        """
+        Map unique integer loop upper-bounds to fresh symbol names (M, N, K, …).
+        Only bounds that are concrete positive integers within the unroll threshold
+        are parametrised — others remain concrete.
+        """
+        seen: Dict[int, str] = {}
+        idx = 0
+        for iv in loop.induction_vars:
+            hi_raw = loop.bounds.get(iv, (0, 1))[1]
+            if not isinstance(hi_raw, int) or hi_raw <= 0:
+                continue
+            if hi_raw > self.unroll_threshold:
+                continue
+            if hi_raw not in seen:
+                seen[hi_raw] = self._SHAPE_DIM_NAMES[idx % len(self._SHAPE_DIM_NAMES)]
+                idx += 1
+        return seen
+
+    def _verify_parametric(
+        self,
+        loop: LoopNestInfo,
+        sketch: OperationSketch,
+    ) -> VerificationReport:
+        """
+        Attempt a shape-parametric proof: prove equivalence for ALL valid shapes
+        (any M, N, K > 0 up to unroll_threshold) rather than at one concrete size.
+
+        The pilot builds a synthetic LoopNestInfo whose concrete upper-bounds are
+        replaced by fresh symbol strings, then delegates to _verify_concrete()
+        which will pick the symbolic proof path.
+        """
+        try:
+            extent_to_sym = self._collect_shape_dims(loop)
+            if not extent_to_sym:
+                return VerificationReport(
+                    result=CheckResult.UNKNOWN,
+                    sketch_name=sketch.name,
+                    elapsed_ms=0.0,
+                    notes="Parametric proof skipped: no concrete shape dimensions to parametrise.",
+                )
+
+            parametric_bounds: Dict[str, Tuple[Union[int, str], Union[int, str]]] = {}
+            for iv, (lo, hi) in loop.bounds.items():
+                if isinstance(hi, int) and hi in extent_to_sym:
+                    parametric_bounds[iv] = (lo, extent_to_sym[hi])
+                else:
+                    parametric_bounds[iv] = (lo, hi)
+
+            param_loop = dataclasses.replace(loop, bounds=parametric_bounds)
+            report = self._verify_concrete(param_loop, sketch)
+            sym_names = list(extent_to_sym.values())
+            report.notes += f" [parametric over dims={sym_names}]"
+            return report
+        except Exception as exc:
+            return VerificationReport(
+                result=CheckResult.UNKNOWN,
+                sketch_name=sketch.name,
+                elapsed_ms=0.0,
+                notes=f"Parametric proof attempt failed: {exc}",
+            )

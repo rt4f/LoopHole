@@ -339,3 +339,33 @@ Evidence artifacts:
 Validation snapshot:
 1. Focused parser/emitter tests: `91 passed`
 2. Full suite: `273 passed`
+
+---
+
+## 12.14 A-13 / A-14 / A-15 Completion Update (2026-04-26)
+
+Person A Sprint 3–5 tasks A-13, A-14, and A-15 are complete.
+
+Scope closed:
+1. A-13: Multi-reduction symbolic boundary improvements — `ReductionPatternKind` enum, `_UnsupportedReductionForm` exception, multi-IV guarded unroll, structured ENCODE_ERROR diagnostics replacing opaque UNKNOWN/ValueError.
+2. A-14: Counterexample replay utility — new `replay_checker.py` module, `replay_counterexample()` entry point, `loophole replay` CLI subcommand, `--show-replay` flag on `loophole lift`.
+3. A-15: Shape-parametric proof pilot — `_verify_parametric()` on Z3EquivalenceChecker, `parametric_mode` flag on Lifter, `--parametric` CLI flag. All three pilot kernels (matmul, matvec, reduce_sum) achieved parametric EQUIVALENT.
+
+Evidence artifacts:
+1. `docs/A/07_a13_a14_a15_sprint3_closure.md`
+2. `docs/A/baselines/a13_a14_a15_sprint3_baseline_20260426.json`
+3. `tests/unit/test_a13_multi_reduction_boundary.py`
+4. `tests/unit/test_a14_counterexample_replay.py`
+5. `tests/unit/test_a15_shape_parametric_proof.py`
+
+Validation snapshot:
+1. A-13 tests: `17 passed`
+2. A-14 tests: `30 passed`
+3. A-15 tests: `28 passed`
+4. Full suite: `348 passed` (273 prior + 75 new)
+
+Benchmark snapshot (linalg fixtures, 2026-04-26):
+- Total kernels: 23 (includes 3 new A-15 parametric fixtures)
+- PROVED: 18 / REFUTED: 5 / TIMEOUT: 0
+- Accepted strict: 18
+- Average elapsed ms: 5.88
