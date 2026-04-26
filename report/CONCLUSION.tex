@@ -1,0 +1,18 @@
+\chapter{CONCLUSION \& FUTURE WORK}
+\section{Conclusion}
+This project demonstrates that automated lifting from loop-level MLIR Affine programs to higher-level tensor dialects is practically achievable with a verification-aware architecture. The implemented pipeline integrates deterministic parsing, sketch-guided symbolic matching, Z3-backed verification signals, and target-dialect emission through reproducible CLI workflows. The generated outputs and strict-profile batch evidence show that the current system can reliably process a canonical dense-kernel fixture set while preserving transparent trust-state reporting.
+
+Beyond implementation completeness, the project contributes an engineering baseline that is directly usable for experimentation and incremental hardening. The modular structure enables independent improvement of parser, verifier, and emitter layers, and the reporting workflow supports measurable progress tracking. Overall, the work establishes a solid platform for moving from prototype capability toward stronger reliability and broader kernel coverage.
+
+\section{Future work}
+Future enhancements are planned in a prioritized manner to preserve trust while expanding capability:
+\begin{enumerate}
+\item Make strict acceptance policy the default for all trusted CI and release profiles.
+\item Improve weak-kernel verification reliability, especially for more complex convolution and reduction variants.
+\item Expand StableHLO parity with improved diagnostics and no silent fallback behavior.
+\item Increase robustness on real frontend-generated MLIR corpora with explicit unsupported-pattern reporting.
+\item Strengthen reproducible benchmark dashboards for weekly trend and regression visibility.
+\item Prepare the next research track from the identified open directions: sparse lifting, transform-dialect schedule synthesis, and dynamic-shape reasoning.
+\end{enumerate}
+
+These steps align the project with both immediate engineering quality goals and long-term research novelty opportunities.

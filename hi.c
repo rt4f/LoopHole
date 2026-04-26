@@ -1,15 +1,19 @@
-#include <stdio.h>
-
-/* Function that squares an integer */
-int square(int x) {
-    return x * x;
+/*
+ * Keep the lifted target as a pure compute kernel so cgeist/Polygeist
+ * can lower it without vararg libc call issues.
+ */
+void dot_product(const float a[8], const float b[8], float c[1]) {
+    for (int i = 0; i < 8; ++i) {
+        c[0] += a[i] * b[i];
+    }
 }
 
-/* Main program: loops from 0 to 4, prints the square of each i */
 int main(void) {
-    for (int i = 0; i < 5; ++i) {
-        int result = square(i);          // call the function
-        printf("i = %d, i^2 = %d\n", i, result);
-    }
-    return 0;    // program finished successfully
+    float a[8] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+    float b[8] = {8.0f, 7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f};
+
+    float c[1] = {0.0f};
+
+    dot_product(a, b, c);
+    return c[0] > 0.0f ? 0 : 1;
 }

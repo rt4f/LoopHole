@@ -1,0 +1,86 @@
+\chapter{IMPLEMENTATION}
+\section{Pseudocode}
+\begin{algorithm}[H]
+\caption{LoopHole lifting workflow}
+\begin{algorithmic}[1]
+\Require Input MLIR file $F$, target dialect $T$, policy profile $P$
+\Ensure Lifted MLIR artifact and trust-state report
+\State Read MLIR text from $F$
+\State Parse loop structure, access patterns, and arithmetic operations
+\If{parsing fails}
+    \State return \textbf{REFUTED} with diagnostic
+\EndIf
+\State Generate candidate sketches from library using structural filters
+\State Score candidates using symbolic tracing
+\State Select top-$k$ candidates by confidence
+\For{each candidate sketch $s$ in top-$k$}
+    \State Run verification check using Z3-backed evaluator
+    \If{result is PROVED}
+        \State Emit lifted MLIR for sketch $s$ in target $T$
+        \State return emitted artifact with state \textbf{PROVED}
+    \ElsIf{result is UNPROVED\_TIMEOUT and profile $P$ is exploratory}
+        \State Emit lifted MLIR as partial exploratory output
+        \State return emitted artifact with state \textbf{UNPROVED\_TIMEOUT}
+    \EndIf
+\EndFor
+\State return \textbf{REFUTED} with best-candidate diagnostics
+\end{algorithmic}
+\end{algorithm}
+
+\section{Implementation Details}  %Algorithm and how it is being implemented}
+%Information about the implementation of Modules
+The implementation follows the staged design described earlier and is organized as a Python package under \texttt{POC\_initial\_demo/src/loophole}. Each stage is isolated as a module and coordinated by a central orchestration layer. This structure allows targeted hardening of parser, verifier, or emitter behavior without changing the full pipeline.
+
+\subsection*{Module mapping}
+\begin{table}[H]
+\centering
+\caption{Implemented modules and their roles}
+\begin{tabular}{|p{3.0cm}|p{4.8cm}|p{7.4cm}|}
+\hline
+\textbf{Module} & \textbf{Primary Function} & \textbf{Key Output} \\
+\hline
+\texttt{affine\_extractor.py} & Deterministic token-scanning parser for Affine/scf loops & LoopNestInfo data model with bounds, reads/writes, and compute ops \\
+\hline
+\texttt{sketch\_library.py} & Operation sketch definitions for target dialects & Canonical sketch catalog used by matcher and verifier \\
+\hline
+\texttt{sympy\_tracer.py} & Symbolic expression tracing and confidence scoring & Ranked candidates with confidence values \\
+\hline
+\texttt{z3\_checker.py} & Formal equivalence check and trust-state assignment & Verification report (PROVED/UNPROVED\_TIMEOUT/REFUTED) \cite{z3} \\
+\hline
+\texttt{emitter.py} & Target-dialect text emission for accepted sketches & Lifted Linalg/StableHLO MLIR artifact \cite{stablehlo} \\
+\hline
+\texttt{lifter.py} & End-to-end orchestration and policy control & Final lift result object and diagnostics \\
+\hline
+\texttt{cli.py} & User-facing command interface & Single-file, verify, batch, and demo command surfaces \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection*{Workflow implementation}
+The implemented command workflows used during validation are summarized below.
+
+\begin{table}[H]
+\centering
+\caption{Operational command workflows used in the project}
+\begin{tabular}{|p{3.0cm}|p{5.0cm}|p{7.2cm}|}
+\hline
+\textbf{Workflow} & \textbf{Representative Command} & \textbf{Observed Purpose} \\
+\hline
+Single lift & \texttt{loophole lift <input>.mlir --target linalg} & Generate one lifted artifact with trust-state output \\
+\hline
+Verification-first run & \texttt{loophole verify <input>.mlir --sketch <name>} & Evaluate equivalence behavior and diagnostics \\
+\hline
+Batch benchmark & \texttt{loophole batch tests/fixtures --report} & Process canonical fixtures and produce structured JSON report \\
+\hline
+Demo health check & \texttt{loophole demo --target linalg} & Quick pipeline sanity check on bundled fixtures \\
+\hline
+Compile-then-lift & Docker/Polygeist assisted flow & Convert C/C++ source to Affine IR before lifting \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection*{Verification and acceptance behavior}
+The current implementation distinguishes trusted and exploratory outcomes through explicit trust states. PROVED outputs represent successful equivalence checks; UNPROVED\_TIMEOUT indicates unresolved proof attempts under time/resource constraints; REFUTED indicates mismatch or failure conditions. This state model allows downstream users to separate strict acceptance from exploratory analysis without hiding uncertainty.
+
+\subsection*{Reporting and reproducibility}
+Batch execution writes structured JSON outputs that capture fixture selection, profile metadata, timing summaries, and per-file outcomes. Combined with the Dockerized toolchain path, this supports reproducible weekly benchmarking and regression analysis across project iterations.

@@ -1,0 +1,38 @@
+\chapter{INTRODUCTION}
+\section{General Introduction}
+Modern computing platforms have shifted from general-purpose CPU scaling to heterogeneous acceleration through GPUs, TPUs, and specialized AI hardware. Legacy numerical software, however, is still largely written as scalar loop nests in C, C++, and Fortran, which hides tensor-level intent from downstream compilers. This mismatch creates a practical barrier: high-value codebases remain difficult to optimize for modern hardware without expensive manual rewriting.
+
+LoopHole addresses this gap by lifting low-level loop programs into high-level MLIR tensor dialects so that mature compiler stacks can optimize them effectively. The project is built around the MLIR ecosystem \cite{mlir}, uses Polygeist-generated Affine IR as the structured loop input \cite{polygeist}, and targets Linalg and StableHLO output forms that are consumable by accelerator backends.
+
+\section{Problem Statement}
+The core problem is to automatically recover mathematical semantics from scalar loop code and emit equivalent tensor IR with a trust-aware verification signal. In practical terms, given an affine loop nest, the system must identify whether it represents operations such as matrix multiplication, transpose, convolution, elementwise map, or reduction, and then emit an equivalent high-level operation with sufficient confidence and correctness checks.
+
+This problem combines compiler analysis, symbolic reasoning, and formal verification. A pure pattern-matching approach is brittle, while unconstrained synthesis is computationally expensive. Therefore, the project adopts a constrained sketch-guided pipeline with formal checks where feasible, and explicit trust-state reporting for each lift.
+
+\section{ Objectives of the project}
+\begin{enumerate}
+\item Build an end-to-end lifting pipeline from MLIR Affine input to Linalg/StableHLO output.
+\item Implement deterministic extraction of loop structure, memory access patterns, and arithmetic operations.
+\item Maintain a reusable sketch library for canonical tensor operations.
+\item Rank candidate sketches using symbolic tracing and confidence scoring.
+\item Validate top candidates through Z3-based equivalence checks where applicable.
+\item Emit compilable lifted MLIR artifacts and expose the workflow through CLI commands.
+\item Provide structured batch reporting to support repeatable benchmarking and regression tracking.
+\end{enumerate}
+
+\section{Project deliverables}
+The current project delivers the following concrete artifacts:
+\begin{itemize}
+\item A working Python package for lifting and verification-aware synthesis.
+\item CLI workflows for single-file lift, verification, batch processing, and demo runs.
+\item Module-level implementation for parsing, sketch matching, formal checking, and emission.
+\item Docker-supported reproducibility path for Polygeist plus MLIR-based compile-then-lift workflows.
+\item Automated report generation in JSON format for batch experiments.
+\item A test suite and project documentation that record implemented behavior, limitations, and improvement tracks.
+\end{itemize}
+
+\section{Current Scope}
+The implemented scope focuses on affine loop kernels with clear structured memory access and deterministic loop bounds. Within this scope, the system supports practical dense operations including matrix multiplication, transpose, dot, elementwise map, 1D/2D convolution patterns, and reduction forms. The project also includes strict-profile reporting to separate trusted outcomes from exploratory runs.
+
+\section{Future Scope}
+Future scope extends toward stronger proof reliability for weak kernels, broader StableHLO parity, and larger real-world corpus support. Beyond engineering hardening, the research direction includes sparse tensor lifting, transform-dialect scheduling synthesis, and dynamic-shape reasoning, aligned with open areas identified in the project roadmap and literature \cite{stagg}.

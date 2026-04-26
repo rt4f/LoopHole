@@ -1,0 +1,82 @@
+\chapter{DESIGN}
+\section{Introduction}
+The design of LoopHole follows a staged pipeline architecture to keep extraction, reasoning, and emission concerns independent. This separation improves maintainability and supports targeted hardening of weak stages without rewriting the entire system. The design is aligned with MLIR-based lifting workflows and emphasizes explicit trust-state outcomes for each transformed artifact.
+
+\section{Architecture Design}
+At a high level, the system processes loop-based MLIR through four major stages: parsing, candidate generation, verification, and emission. The parser builds structured loop metadata; the matcher selects likely operation sketches; the verifier evaluates equivalence on top candidates; and the emitter generates target-dialect MLIR.
+
+\begin{table}[H]
+\centering
+\caption{Core architecture stages and responsibilities}
+\begin{tabular}{|p{2.8cm}|p{3.6cm}|p{3.7cm}|p{5.1cm}|}
+\hline
+\textbf{Stage} & \textbf{Primary Module} & \textbf{Input/Output} & \textbf{Responsibility} \\
+\hline
+Parsing & \texttt{affine\_extractor.py} & Affine MLIR text to LoopNestInfo & Extract loops, bounds, access patterns, and arithmetic structure \\
+\hline
+Candidate generation & \texttt{sympy\_tracer.py} + \texttt{sketch\_library.py} & LoopNestInfo to ranked sketches & Build symbolic expressions and score sketch compatibility \\
+\hline
+Verification & \texttt{z3\_checker.py} & Ranked sketch to verification report & Run formal/heuristic equivalence checks and assign trust state \\
+\hline
+Emission & \texttt{emitter.py} & Accepted sketch to MLIR artifact & Emit Linalg/StableHLO-compatible output text \\
+\hline
+Orchestration & \texttt{lifter.py} & Stage outputs to final result object & Coordinate policy profile, acceptance logic, and diagnostics \\
+\hline
+\end{tabular}
+\end{table}
+
+This staged architecture supports both exploratory development and strict-profile evaluation by centralizing acceptance policy in orchestration while retaining modular internals.
+
+\section{User Interface Design}
+The primary user interface is command-line based. This choice is intentional: contributors can run reproducible experiments, integrate with scripts, and automate CI-friendly benchmarks without GUI dependencies.
+
+\begin{table}[H]
+\centering
+\caption{CLI interface design and operational intent}
+\begin{tabular}{|p{2.8cm}|p{4.8cm}|p{7.6cm}|}
+\hline
+\textbf{Command} & \textbf{Purpose} & \textbf{Typical Output} \\
+\hline
+\texttt{loophole lift} & Lift a single MLIR input into selected target dialect & Lifted MLIR, trust state, and diagnostics \\
+\hline
+\texttt{loophole verify} & Run verification flow without focus on emission & Verification state and proof-related notes \\
+\hline
+\texttt{loophole batch} & Process multiple fixtures in one run & Structured JSON report, per-file status summary \\
+\hline
+\texttt{loophole demo} & Execute canonical fixture walkthrough & Quick project health snapshot and sample outputs \\
+\hline
+\texttt{loophole sketches} & Inspect available sketch definitions & Operation list for both target dialects \\
+\hline
+\end{tabular}
+\end{table}
+
+The interface returns explicit trust states (PROVED, UNPROVED\_TIMEOUT, REFUTED), which supports transparent downstream decision-making.
+
+\section{State Diagram}
+The execution can be represented as a deterministic state machine with guarded transitions based on evidence quality and policy profile.
+
+\begin{table}[H]
+\centering
+\caption{Operational state flow for one lifting request}
+\begin{tabular}{|p{3.2cm}|p{5.0cm}|p{6.8cm}|}
+\hline
+\textbf{State} & \textbf{Transition Condition} & \textbf{Next State} \\
+\hline
+Input Loaded & MLIR source is readable and non-empty & Parsed \\
+\hline
+Parsed & Loop and access metadata extracted successfully & Candidate Ranked \\
+\hline
+Candidate Ranked & At least one viable sketch candidate found & Verification Attempted \\
+\hline
+Verification Attempted & Z3/verification path returns a trust-state result & Accepted or Rejected \\
+\hline
+Accepted & Policy profile permits output for returned state & Emitted \\
+\hline
+Rejected & No acceptable candidate or disallowed trust state & Terminal Failure \\
+\hline
+Emitted & Target dialect artifact generated successfully & Terminal Success \\
+\hline
+\end{tabular}
+\end{table}
+
+This state-oriented design keeps control flow explicit, simplifies diagnostics, and helps maintain consistency across single-file and batch execution paths.

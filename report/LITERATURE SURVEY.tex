@@ -1,0 +1,32 @@
+\chapter{LITERATURE SURVEY}
+% Add details as per your project
+\section{Introduction}
+Automated lifting from scalar loops to tensor representations has progressed from handcrafted rewrite rules to synthesis-driven and neuro-symbolic techniques. For this project, the most relevant lineage includes mlirSynth \cite{mlirsynth}, Tenspiler \cite{tenspiler}, Tensorize \cite{tensorize}, and STAGG \cite{stagg}. These systems collectively define the design space for search strategy, verification strategy, scalability, and trust guarantees.
+
+\section{Related Works }
+Early MLIR lifting efforts emphasized structural rewrite opportunities, while newer systems use symbolic reasoning and synthesis to generalize beyond fixed hand-coded patterns. mlirSynth demonstrated retargetable raising via enumerative synthesis in MLIR and showed strong accelerator potential, but practical search complexity remains a key challenge \cite{mlirsynth}. Tenspiler introduced SMT-backed verification workflows for tensor lifting, highlighting formal correctness benefits as well as solver-timeout boundaries on harder kernels \cite{tenspiler}. Tensorize improved scalability by combining symbolic tracing with sketch-and-solve decomposition, reporting strong empirical gains over baseline compilation on dense kernels \cite{tensorize}. STAGG pushed the field further by combining LLM-guided probabilistic grammars with guided search and formal checks, improving solve rates and synthesis efficiency on benchmark suites \cite{stagg}.
+
+\begin{table}[H]
+\centering
+\caption{Comparison of major lifting frameworks relevant to LoopHole}
+\begin{tabular}{|p{2.3cm}|p{2.2cm}|p{3.0cm}|p{3.5cm}|p{3.8cm}|}
+\hline
+\textbf{Framework} & \textbf{Year/Venue} & \textbf{Core Method} & \textbf{Strength} & \textbf{Limitation Relevant to this Project} \\
+\hline
+mlirSynth & 2023 / PACT & Bottom-up enumerative synthesis in MLIR dialect space & Retargetable lifting and strong TPU gains reported & Exponential search growth for longer operation sequences \cite{mlirsynth} \\
+\hline
+Tenspiler & 2024 / ECOOP & Rosette plus SMT verification & Formal proof-oriented lifting pipeline & Invariant complexity and SMT timeout pressure on harder kernels \cite{tenspiler} \\
+\hline
+Tensorize & 2025 / CGO & Symbolic tracing plus algebraic sketch solving & Better scaling on dense kernels and high benchmark coverage & Primarily dense/static regimes; limited sparse and dynamic-shape support \cite{tensorize} \\
+\hline
+STAGG & 2025 / PLDI & LLM-guided probabilistic grammar plus guided search & High benchmark solve rate with efficient search guidance & Focuses on dense tensor algebra; novelty now requires new open fronts \cite{stagg} \\
+\hline
+LoopHole (this project) & 2026 / Project POC & Deterministic Affine extraction + sketch ranking + Z3 checks + MLIR emission & Practical end-to-end implementation with trust-state reporting and reproducible workflow & StableHLO parity and broader proof envelope still under active hardening \\
+\hline
+\end{tabular}
+\end{table}
+
+In summary, the literature indicates that practical systems benefit from combining structural extraction, symbolic guidance, and formal checks rather than relying on a single mechanism. LoopHole adopts this blended strategy and prioritizes implementation-first trust signals for each produced output.
+
+\section{Conclusion of Survey}
+The survey shows a clear evolution toward hybrid synthesis architectures that balance correctness, scalability, and usability. Existing state-of-the-art systems establish strong baselines, but open challenges remain in dynamic shapes, sparse representations, and stronger operational trust defaults. These gaps motivate the current project direction and inform the design choices used in the implementation chapters.

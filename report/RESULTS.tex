@@ -1,0 +1,115 @@
+\chapter{RESULTS}
+\section{Result Snapshots}
+The project outputs include trust-state summaries, lifted MLIR artifacts, and machine-readable benchmark reports. As requested, this section keeps placeholder images for final screenshots while presenting complete analysis text and quantitative tables.
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.9\textwidth}{\centering Placeholder Figure R1\\Strict-profile batch dashboard screenshot to be inserted.}}
+    \caption{Placeholder for strict-profile batch summary output.}
+    \label{fig:result_placeholder_1}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.9\textwidth}{\centering Placeholder Figure R2\\Per-kernel verification timeline screenshot to be inserted.}}
+    \caption{Placeholder for per-kernel verification timeline view.}
+    \label{fig:result_placeholder_2}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.9\textwidth}{\centering Placeholder Figure R3\\Lifted MLIR artifact comparison screenshot to be inserted.}}
+    \caption{Placeholder for source-vs-lifted artifact visualization.}
+    \label{fig:result_placeholder_3}
+\end{figure}
+
+\section{Comparative Analysis}
+Table \ref{tab:comparative} summarizes how LoopHole currently compares with representative systems discussed in the survey. The comparison highlights that the project has a practical and reproducible pipeline in place, while larger research-grade challenges remain open in coverage and generalized proof depth.
+
+\begin{table}[H]
+\centering
+\caption{Comparative positioning against key lifting systems}
+\label{tab:comparative}
+\begin{tabular}{|p{2.7cm}|p{3.5cm}|p{3.0cm}|p{6.1cm}|}
+\hline
+\textbf{System} & \textbf{Primary Strategy} & \textbf{Reported Strength} & \textbf{Current Constraint} \\
+\hline
+mlirSynth \cite{mlirsynth} & Enumerative synthesis in MLIR dialect space & Strong TPU speedup potential & Search complexity increases rapidly with longer operation chains \\
+\hline
+Tenspiler \cite{tenspiler} & SMT-verified lifting pipeline & Formal verification orientation & Hard cases encounter invariant/solver complexity limits \\
+\hline
+Tensorize \cite{tensorize} & Symbolic tracing and algebraic sketch solving & High dense-kernel benchmark performance & Focused on dense/static settings \\
+\hline
+STAGG \cite{stagg} & LLM-guided probabilistic grammar with guided search & High benchmark solve rates and fast synthesis & Dense-focus leaves open sparse/dynamic fronts \\
+\hline
+LoopHole (this work) & Deterministic extraction + symbolic ranking + trust-state verification & Reproducible end-to-end implementation with strict-profile reporting & StableHLO parity and broader weak-kernel proof envelope are still being hardened \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Performance Analysis}
+A strict-profile batch report over seven canonical fixture files shows fully accepted outputs for the evaluated set. The run captured deterministic metadata, per-file trust state, and verification latency distribution.
+
+\begin{table}[H]
+\centering
+\caption{Strict-profile batch summary (fixture set size = 7)}
+\begin{tabular}{|p{6.0cm}|p{4.0cm}|p{5.0cm}|}
+\hline
+\textbf{Metric} & \textbf{Observed Value} & \textbf{Notes} \\
+\hline
+Total processed fixtures & 7 & Canonical fixture set in batch report \\
+\hline
+PROVED count & 7 & All processed files accepted in strict profile \\
+\hline
+UNPROVED\_TIMEOUT count & 0 & No timeout-state outputs in this run \\
+\hline
+REFUTED count & 0 & No refuted outputs in this strict batch snapshot \\
+\hline
+Average verification latency & 12.87 ms & Mean over per-file elapsed times \\
+\hline
+Latency range & 5.27 ms to 33.98 ms & Minimum and maximum observed values \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Per-kernel verification latency from strict-profile report}
+\begin{tabular}{|p{4.0cm}|p{3.0cm}|p{3.0cm}|p{4.5cm}|}
+\hline
+\textbf{Kernel Fixture} & \textbf{State} & \textbf{Elapsed (ms)} & \textbf{Matched Sketch} \\
+\hline
+\texttt{conv1d.mlir} & PROVED & 33.98 & \texttt{linalg.conv\_1d\_ncw\_fcw} \\
+\hline
+\texttt{conv2d.mlir} & PROVED & 18.11 & \texttt{linalg.conv\_2d} \\
+\hline
+\texttt{matmul.mlir} & PROVED & 11.91 & \texttt{linalg.matmul} \\
+\hline
+\texttt{dot\_product.mlir} & PROVED & 8.39 & \texttt{linalg.dot} \\
+\hline
+\texttt{reduce\_sum.mlir} & PROVED & 6.54 & \texttt{linalg.reduce(addf)\_rowsum} \\
+\hline
+\texttt{elementwise\_add.mlir} & PROVED & 5.91 & \texttt{linalg.map(addf)} \\
+\hline
+\texttt{transpose.mlir} & PROVED & 5.27 & \texttt{linalg.transpose} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Applications}
+Based on the current implementation envelope, practical application areas include:
+\begin{itemize}
+\item Legacy dense linear-algebra kernels requiring migration into MLIR tensor workflows.
+\item Compiler research experimentation where trust-state output is required per transformation.
+\item Education and prototyping for verification-aware lifting in MLIR toolchains.
+\item CI-oriented regression checks on canonical loop-kernel fixture suites.
+\end{itemize}
+
+\subsection{Limitations}
+The present results should be interpreted with scope awareness:
+\begin{itemize}
+\item The strongest outcomes are currently observed on constrained affine dense kernels.
+\item StableHLO coverage has improved but is not yet full parity with the mature Linalg path.
+\item Dynamic-shape universal proof strategies and sparse tensor lifting remain future research tracks.
+\item Broader real-world corpus validation is still an ongoing hardening objective.
+\end{itemize}

@@ -1,0 +1,95 @@
+\chapter{PROJECT REQUIREMENT SPECIFICATIONS}
+
+\section{Hardware Requirements}
+\begin{table}[H]
+\centering
+\caption{Hardware requirements for development and validation}
+\begin{tabular}{|p{3.5cm}|p{5.0cm}|p{6.0cm}|}
+\hline
+\textbf{Component} & \textbf{Minimum Requirement} & \textbf{Recommended for Smooth Workflow} \\
+\hline
+Processor & 4-core x86-64 CPU & 8-core or higher CPU for faster local test and build cycles \\
+\hline
+Memory (RAM) & 8 GB & 16 GB or higher, especially for Docker and toolchain workflows \\
+\hline
+Storage & 10 GB free space & 25 GB or higher for LLVM/MLIR artifacts and report outputs \\
+\hline
+Operating System & Windows 10/11, Linux, or macOS & Linux/WSL2 for easier Polygeist/MLIR workflow integration \\
+\hline
+Network & Standard internet access & Stable broadband for package/toolchain pulls and container images \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Software Requirements}
+\begin{table}[H]
+\centering
+\caption{Software stack used by the project}
+\begin{tabular}{|p{3.8cm}|p{3.0cm}|p{7.7cm}|}
+\hline
+\textbf{Software} & \textbf{Version/Type} & \textbf{Purpose} \\
+\hline
+Python & 3.10+ & Runtime for pipeline modules, CLI, and reporting scripts \\
+\hline
+z3-solver & 4.12+ (Python package) & Formal equivalence checking and trust-state generation \cite{z3} \\
+\hline
+SymPy & 1.12+ & Symbolic tracing and sketch confidence scoring \\
+\hline
+LLVM/MLIR toolchain & Compatible build or container image & IR ecosystem, dialect compatibility, and downstream validation \cite{mlir} \\
+\hline
+Polygeist & Frontend toolchain & C/C++ to MLIR Affine conversion path \cite{polygeist} \\
+\hline
+Docker (optional but recommended) & Current stable release & Reproducible compile-then-lift workflow \\
+\hline
+Pytest & Current stable release & Unit and integration testing automation \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Functional Requirements}
+\begin{table}[H]
+\centering
+\caption{Functional requirements for LoopHole}
+\begin{tabular}{|p{1.5cm}|p{6.0cm}|p{7.0cm}|}
+\hline
+\textbf{ID} & \textbf{Requirement} & \textbf{Validation Evidence} \\
+\hline
+FR-1 & Parse affine/scf loop-based MLIR and extract loop/memory/computation metadata & Affine extraction module and parser-focused tests \\
+\hline
+FR-2 & Maintain sketch definitions for Linalg and StableHLO target operations & Sketch library and sketch listing CLI path \\
+\hline
+FR-3 & Rank candidate operations using symbolic trace confidence & SymPy tracer and ranked candidate flow \\
+\hline
+FR-4 & Verify candidate equivalence using Z3 where proof path is available & Verification reports with PROVED/UNPROVED/REFUTED states \\
+\hline
+FR-5 & Emit lifted MLIR for accepted outputs in selected target dialect & Linalg/StableHLO emitter modules and generated artifacts \\
+\hline
+FR-6 & Support CLI execution for single-file lift, verify, batch, and demo paths & Implemented loophole command surface \\
+\hline
+FR-7 & Generate structured batch reports for repeatable benchmark runs & JSON report schema and weekly benchmark helper \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Non-Functional Requirements}
+\begin{table}[H]
+\centering
+\caption{Non-functional requirements and quality targets}
+\begin{tabular}{|p{3.5cm}|p{4.0cm}|p{7.0cm}|}
+\hline
+\textbf{Quality Attribute} & \textbf{Target} & \textbf{Rationale} \\
+\hline
+Correctness transparency & Explicit trust-state reporting for every lift result & Avoid silent acceptance of uncertain outputs \\
+\hline
+Reproducibility & Same fixture set should produce stable batch report schema and metadata & Enables longitudinal benchmarking and regression tracking \\
+\hline
+Maintainability & Modular code organization by stage (parser, matcher, verifier, emitter, CLI) & Supports targeted debugging and parallel development \\
+\hline
+Usability & CLI-first workflow with meaningful diagnostics & Enables rapid experimentation for contributors \\
+\hline
+Portability & Linux/WSL2/Docker-compatible execution paths & Reduces environment-specific setup friction \\
+\hline
+Performance efficiency & Verification latency suitable for fixture-scale CI runs & Maintains practical iteration speed during development \\
+\hline
+\end{tabular}
+\end{table}
