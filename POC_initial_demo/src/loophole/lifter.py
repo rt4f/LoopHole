@@ -24,13 +24,14 @@ The lifter returns a LiftResult which contains:
 from __future__ import annotations
 
 import os
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Set, Tuple
 
 from loophole.affine_extractor import AffineExtractor, LoopNestInfo
-from loophole.emitter import LinalgEmitter, StableHLOEmitter
+from loophole.emitter import LinalgEmitter, StableHLOEmitter, _infer_linear_coeff
 from loophole.sketch_library import (
     SKETCH_LIBRARY, LINALG_SKETCHES, STABLEHLO_SKETCHES, OperationSketch,
 )
@@ -38,6 +39,96 @@ from loophole.sympy_tracer import SympyTracer, TraceResult
 from loophole.z3_checker import (
     CheckResult, VerificationReport, Z3EquivalenceChecker, structural_match,
 )
+
+
+# ---------------------------------------------------------------------------
+# Strided convolution sketch builder
+# ---------------------------------------------------------------------------
+
+
+def _build_strided_conv_sketch(
+    loop: LoopNestInfo,
+    sketch: OperationSketch,
+) -> Optional[OperationSketch]:
+    """
+    For a conv sketch that failed Z3 due to non-unit strides/dilations, build a
+    modified sketch whose input indexing map uses the actual stride/dilation
+    coefficients extracted from the loop access pattern.
+
+    Returns None if the sketch is not a conv sketch, strides/dilations are already
+    unit, or extraction fails.  On success returns a shallow copy of the sketch
+    with updated indexing_maps (only the input map is changed).
+    """
+    is_conv = sketch.name.startswith("linalg.conv") or sketch.name.startswith("stablehlo.convolution")
+    if not is_conv:
+        return None
+
+    src_parallel = loop.parallel_vars
+    src_reduction = loop.reduction_vars
+    sk_parallel = sketch.parallel_dims()
+    sk_reduction = sketch.reduction_dims()
+    if len(src_parallel) != len(sk_parallel) or len(src_reduction) != len(sk_reduction):
+        return None
+
+    dim_to_iv: Dict[str, str] = {}
+    for sk_dim, src_iv in zip(sk_parallel, src_parallel):
+        dim_to_iv[sk_dim] = src_iv
+    for sk_dim, src_iv in zip(sk_reduction, src_reduction):
+        dim_to_iv[sk_dim] = src_iv
+
+    output_name = loop.output_tensor
+    input_reads = [r for r in loop.reads if r.tensor_name != output_name]
+    if not input_reads:
+        return None
+    input_exprs = input_reads[0].index_exprs
+
+    # Per input dimension: source_iv → coefficient
+    iv_coeffs_per_dim: List[Dict[str, int]] = []
+    for expr in input_exprs:
+        coeffs: Dict[str, int] = {}
+        for iv in src_parallel + src_reduction:
+            c = _infer_linear_coeff(expr, iv)
+            if c is not None:
+                coeffs[iv] = c
+        iv_coeffs_per_dim.append(coeffs)
+
+    # Parse and rewrite the input indexing map (first map in sketch.indexing_maps)
+    input_map_str = sketch.indexing_maps[0]
+    arrow_pos = input_map_str.find('->')
+    if arrow_pos < 0:
+        return None
+    map_header = input_map_str[:arrow_pos].strip()
+    result_part = input_map_str[arrow_pos + 2:].strip()
+    inner = result_part.strip('(').rstrip(')')
+    result_exprs = [p.strip() for p in inner.split(',')]
+
+    modified_exprs: List[str] = []
+    was_modified = False
+
+    for i, sk_expr in enumerate(result_exprs):
+        coeffs_this_dim = iv_coeffs_per_dim[i] if i < len(iv_coeffs_per_dim) else {}
+        terms: List[str] = []
+        for sk_dim in sketch.dim_names:
+            if not re.search(rf'\b{re.escape(sk_dim)}\b', sk_expr):
+                continue
+            src_iv = dim_to_iv.get(sk_dim)
+            if src_iv is None:
+                terms.append(sk_dim)
+                continue
+            actual_coeff = coeffs_this_dim.get(src_iv)
+            if actual_coeff is None or actual_coeff == 1:
+                terms.append(sk_dim)
+            elif actual_coeff > 1:
+                terms.append(f"{actual_coeff}*{sk_dim}")
+                was_modified = True
+        modified_exprs.append(' + '.join(terms) if terms else sk_expr)
+
+    if not was_modified:
+        return None
+
+    new_input_map = f"{map_header} -> ({', '.join(modified_exprs)})"
+    new_maps = [new_input_map] + list(sketch.indexing_maps[1:])
+    return _dc_replace(sketch, indexing_maps=new_maps)
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +631,19 @@ class Lifter:
                 if best_timeout is None:
                     best_timeout = (sketch, report, conf)
             elif report.result == CheckResult.NOT_EQUIVALENT:
+                strided_sketch = _build_strided_conv_sketch(loop, sketch)
+                if strided_sketch is not None:
+                    if self.verbose:
+                        print(f"[Z3] Strided conv fallback for {sketch.name}...")
+                    strided_report = self._z3.check(loop, strided_sketch)
+                    self._annotate_disagreement(strided_report, conf)
+                    if self.verbose:
+                        print(f"     -> {strided_report.result.value} in {strided_report.elapsed_ms:.1f}ms")
+                    if strided_report.result == CheckResult.EQUIVALENT:
+                        return (sketch, strided_report, conf)
+                    if strided_report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
+                        if best_timeout is None:
+                            best_timeout = (sketch, strided_report, conf)
                 if best_refuted is None:
                     best_refuted = (sketch, report, conf)
 

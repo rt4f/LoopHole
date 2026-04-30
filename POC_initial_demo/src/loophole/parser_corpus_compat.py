@@ -47,9 +47,6 @@ def _classify_incompatibilities(mlir_text: str, loop_count: int, write_count: in
         classes.append("conditional_region_not_modeled")
     if "scf.while" in mlir_text or "affine.parallel" in mlir_text:
         classes.append("non_for_loop_control_not_modeled")
-    if "affine.apply" in mlir_text:
-        classes.append("affine_apply_index_materialization")
-
     return sorted(set(classes))
 
 

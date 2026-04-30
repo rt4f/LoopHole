@@ -65,7 +65,7 @@ def test_generate_report_includes_schema_and_summary(monkeypatch, tmp_path) -> N
         docker_image=None,
     )
 
-    assert payload["schema_version"] == "1.1"
+    assert payload["schema_version"] == "1.2"
     assert payload["label"] == "sprint1_week1"
     assert payload["target"] == "linalg"
     assert payload["summary"]["total_kernels"] == 2
@@ -107,7 +107,7 @@ def test_write_reports_writes_json_and_markdown(monkeypatch, tmp_path) -> None:
     assert paths["markdown"].exists()
 
     persisted_payload = json.loads(paths["json"].read_text(encoding="utf-8"))
-    assert persisted_payload["schema_version"] == "1.1"
+    assert persisted_payload["schema_version"] == "1.2"
     markdown = paths["markdown"].read_text(encoding="utf-8")
     assert "# Weekly Benchmark Report" in markdown
     assert "stablehlo_week1" in markdown

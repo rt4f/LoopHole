@@ -712,6 +712,31 @@ func.func @conv2d_var_times_const_index(%I: memref<8x8xf32>, %K: memref<2x2xf32>
 """
 
 # ---------------------------------------------------------------------------
+# iter_args SSA reduction form (Polygeist output from C matmul)
+# ---------------------------------------------------------------------------
+
+MATMUL_ITER_ARGS_MLIR = """\
+module {
+  func.func @matmul_2x2(%arg0: memref<2x2xf32>, %arg1: memref<2x2xf32>, %arg2: memref<2x2xf32>) {
+    %cst = arith.constant 0.000000e+00 : f32
+    affine.for %arg3 = 0 to 2 {
+      affine.for %arg4 = 0 to 2 {
+        %0 = affine.for %arg5 = 0 to 2 iter_args(%arg6 = %cst) -> (f32) {
+          %1 = affine.load %arg0[%arg3, %arg5] : memref<2x2xf32>
+          %2 = affine.load %arg1[%arg5, %arg4] : memref<2x2xf32>
+          %3 = arith.mulf %1, %2 : f32
+          %4 = arith.addf %arg6, %3 : f32
+          affine.yield %4 : f32
+        }
+        affine.store %0, %arg2[%arg3, %arg4] : memref<2x2xf32>
+      }
+    }
+    return
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Demo fixture dictionary — ordered for display
 # ---------------------------------------------------------------------------
 
@@ -729,7 +754,6 @@ DEMO_FIXTURES = {
     "matvec":             MATVEC_MLIR,
     "matmul_dynamic_dims": MATMUL_DYNAMIC_DIMS_MLIR,
     "matmul_unranked_memref": MATMUL_UNRANKED_MEMREF_MLIR,
-    "matmul_dynamic_conflicting_annotations": MATMUL_DYNAMIC_CONFLICTING_ANNOTATIONS_MLIR,
     "matmul_zero_dim_static": MATMUL_ZERO_DIM_STATIC_MLIR,
     "mixed_realworld_matmul": MIXED_REALWORLD_MATMUL_MLIR,
     "elementwise_add":    ELEMENTWISE_ADD_MLIR,

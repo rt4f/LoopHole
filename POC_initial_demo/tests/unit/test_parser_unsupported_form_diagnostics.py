@@ -34,13 +34,16 @@ def test_conditional_region_has_explicit_diagnostic_and_guidance() -> None:
     assert any("predicatize" in g or "Specialize" in g for g in guidances)
 
 
-def test_affine_apply_form_has_explicit_diagnostic_and_guidance() -> None:
+def test_affine_apply_form_is_now_handled() -> None:
+    # affine.apply indices are now resolved by _extract_affine_apply_map;
+    # no diagnostic warning should be emitted for this pattern.
     ext = AffineExtractor(validate_with_mlir=False)
     result = ext.extract(_read_corpus_fixture("polygeist_affine_apply_indices.mlir"))
-    reasons, guidances = _diagnostic_texts(result)
 
-    assert any("affine.apply" in reason for reason in reasons)
-    assert any("Canonicalize affine.apply" in g for g in guidances)
+    assert len(result.diagnostics) == 0
+    # The offset index (%j = d0+1 applied to %i) must resolve to "i + 1"
+    assert result.reads and result.reads[0].index_exprs == ["i + 1"]
+    assert result.writes and result.writes[0].index_exprs == ["i + 1"]
 
 
 def test_no_loop_and_no_store_have_explicit_diagnostics_and_guidance() -> None:

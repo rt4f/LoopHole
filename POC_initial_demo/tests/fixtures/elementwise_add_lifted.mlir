@@ -1,5 +1,5 @@
 // LoopHole: Automatically lifted from scalar loop nest (StableHLO target)
-// Source: elementwise_add → stablehlo.add
+// Source: elementwise_add -> stablehlo.add
 // Description: C[i,j] = A[i,j] + B[i,j]  — StableHLO elementwise add
 
 module {

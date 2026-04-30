@@ -307,8 +307,12 @@ def _normalize_index(
     idx: str,
     iv_map: Dict[str, str],
     const_map: Optional[Dict[str, Union[int, float]]] = None,
+    apply_map: Optional[Dict[str, str]] = None,
 ) -> str:
     expr = idx.strip()
+    if apply_map:
+        for ssa_name, symbolic_expr in sorted(apply_map.items(), key=lambda item: len(item[0]), reverse=True):
+            expr = _replace_token_boundary(expr, ssa_name, f"({symbolic_expr})")
     for ssa_name, short_name in sorted(iv_map.items(), key=lambda item: len(item[0]), reverse=True):
         expr = _replace_token_boundary(expr, ssa_name, short_name)
     expr = _apply_known_constants(expr, const_map)
@@ -347,7 +351,8 @@ class AffineExtractor:
         func_name, func_args = self._parse_func_declaration(text)
         const_map = self._extract_constants(text)
         induction_vars, bounds_raw, loop_order, iv_map = self._parse_loop_structure(text)
-        reads, writes = self._collect_accesses(text, iv_map, const_map)
+        apply_map = self._extract_affine_apply_map(text, iv_map)
+        reads, writes = self._collect_accesses(text, iv_map, const_map, apply_map)
         compute_ops = self._collect_compute_ops(text)
         self._add_unsupported_form_diagnostics(
             text=text,
@@ -391,7 +396,9 @@ class AffineExtractor:
         writes: List[AccessPattern],
     ) -> None:
         """Emit explicit unsupported-form diagnostics for known corpus miss classes."""
-        if "iter_args(" in text:
+        # scf.for with iter_args is still unsupported (result returned via SSA, no affine.store).
+        # affine.for with iter_args is handled by the parser.
+        if "scf.for" in text and "iter_args(" in text:
             self._add_diagnostic(
                 "warning",
                 "_add_unsupported_form_diagnostics",
@@ -415,17 +422,7 @@ class AffineExtractor:
                 ),
             )
 
-        if "affine.apply" in text:
-            self._add_diagnostic(
-                "warning",
-                "_add_unsupported_form_diagnostics",
-                "Index materialization via affine.apply is not modeled",
-                "affine.apply",
-                guidance=(
-                    "Canonicalize affine.apply results into direct load/store subscript "
-                    "expressions before lifting."
-                ),
-            )
+        # affine.apply is handled by _extract_affine_apply_map; no warning needed
 
         if not induction_vars:
             self._add_diagnostic(
@@ -620,9 +617,13 @@ class AffineExtractor:
         return name
 
     def _parse_affine_for(self, line: str) -> Optional[Tuple[str, str, str]]:
-        if not line.startswith("affine.for "):
+        # Handles both:
+        #   affine.for %iv = lb to ub { ... }
+        #   %result = affine.for %iv = lb to ub iter_args(%acc = %init) -> (type) { ... }
+        if "affine.for " not in line:
             return None
-        body = line[len("affine.for "):].strip()
+        idx = line.find("affine.for ")
+        body = line[idx + len("affine.for "):].strip()
         if "=" not in body or " to " not in body:
             return None
 
@@ -635,6 +636,11 @@ class AffineExtractor:
 
         if " step " in ub:
             ub = ub.split(" step ", 1)[0].strip()
+        # Strip iter_args(...) and return type annotations produced by Polygeist
+        if " iter_args" in ub:
+            ub = ub.split(" iter_args", 1)[0].strip()
+        if " ->" in ub:
+            ub = ub.split(" ->", 1)[0].strip()
         if ub.endswith("{"):
             ub = ub[:-1].strip()
 
@@ -711,6 +717,104 @@ class AffineExtractor:
 
         return induction_vars, bounds_raw, loop_order, iv_map
 
+    def _extract_affine_apply_map(
+        self,
+        text: str,
+        iv_map: Dict[str, str],
+    ) -> Dict[str, str]:
+        """
+        Parse affine.apply statements and return a map from SSA result name to
+        its substituted symbolic expression using short IV names.
+
+        Example:
+            %j = affine.apply affine_map<(d0) -> (d0 + 1)>(%i)
+            with iv_map = {"%i": "i"}  ->  {"%j": "i + 1"}
+        """
+        apply_map: Dict[str, str] = {}
+
+        for line in self._iter_clean_lines(text):
+            if "affine.apply" not in line or "=" not in line:
+                continue
+
+            lhs, rhs = line.split("=", 1)
+            result_ssa = lhs.strip()
+
+            map_kw = "affine_map<"
+            map_kw_idx = rhs.find(map_kw)
+            if map_kw_idx < 0:
+                continue
+
+            # Parse affine_map<(dims)[syms] -> (result)> component by component
+            # to avoid confusion between '->' and the map-closing '>'.
+            pos = map_kw_idx + len(map_kw)  # right after 'affine_map<'
+
+            # Dim params (d0, d1, ...)
+            if pos >= len(rhs) or rhs[pos] != '(':
+                continue
+            dim_close = _find_matching(rhs, pos, '(', ')')
+            if dim_close < 0:
+                continue
+            dim_names = [d.strip() for d in rhs[pos + 1:dim_close].split(',') if d.strip()]
+            pos = dim_close + 1
+
+            # Optional symbol params [s0, ...]
+            while pos < len(rhs) and rhs[pos] == ' ':
+                pos += 1
+            if pos < len(rhs) and rhs[pos] == '[':
+                sym_close = _find_matching(rhs, pos, '[', ']')
+                if sym_close < 0:
+                    continue
+                pos = sym_close + 1
+
+            # Arrow '->'
+            arrow_idx = rhs.find('->', pos)
+            if arrow_idx < 0:
+                continue
+
+            # Result expression (expr)
+            res_open = rhs.find('(', arrow_idx + 2)
+            if res_open < 0:
+                continue
+            res_close = _find_matching(rhs, res_open, '(', ')')
+            if res_close < 0:
+                continue
+            expr_str = rhs[res_open + 1:res_close].strip()
+
+            # Closing '>' of affine_map<
+            map_close = rhs.find('>', res_close)
+            if map_close < 0:
+                continue
+
+            # Operands (%i, ...) after the closing '>'
+            op_open = rhs.find('(', map_close)
+            if op_open < 0:
+                continue
+            op_close = _find_matching(rhs, op_open, '(', ')')
+            if op_close < 0:
+                continue
+            operands = [o.strip() for o in rhs[op_open + 1:op_close].split(',') if o.strip()]
+
+            if len(operands) != len(dim_names):
+                self._add_diagnostic(
+                    "debug",
+                    "_extract_affine_apply_map",
+                    f"Operand/dim count mismatch in affine.apply: {len(operands)} vs {len(dim_names)}",
+                    line,
+                )
+                continue
+
+            substituted = expr_str
+            for dim_name, operand in zip(dim_names, operands):
+                if operand in iv_map:
+                    replacement = iv_map[operand]
+                else:
+                    replacement = operand.lstrip("%")
+                substituted = _replace_token_boundary(substituted, dim_name, replacement)
+
+            apply_map[result_ssa] = _canonicalize_index_expr(substituted)
+
+        return apply_map
+
     def _parse_load(
         self,
         line: str,
@@ -718,6 +822,7 @@ class AffineExtractor:
         is_affine: bool,
         iv_map: Dict[str, str],
         const_map: Optional[Dict[str, Union[int, float]]] = None,
+        apply_map: Optional[Dict[str, str]] = None,
     ) -> Optional[AccessPattern]:
         if "=" not in line or keyword not in line:
             return None
@@ -764,7 +869,7 @@ class AffineExtractor:
             )
 
         shape, etype = _parse_memref_type(type_str)
-        idx_exprs = [_normalize_index(idx, iv_map, const_map) for idx in _split_top_level(indices_raw, ",")]
+        idx_exprs = [_normalize_index(idx, iv_map, const_map, apply_map) for idx in _split_top_level(indices_raw, ",")]
 
         return AccessPattern(
             tensor_name=tensor,
@@ -783,6 +888,7 @@ class AffineExtractor:
         is_affine: bool,
         iv_map: Dict[str, str],
         const_map: Optional[Dict[str, Union[int, float]]] = None,
+        apply_map: Optional[Dict[str, str]] = None,
     ) -> Optional[AccessPattern]:
         kw_idx = line.find(keyword)
         if kw_idx < 0:
@@ -836,7 +942,7 @@ class AffineExtractor:
             )
 
         shape, etype = _parse_memref_type(type_str)
-        idx_exprs = [_normalize_index(idx, iv_map, const_map) for idx in _split_top_level(indices_raw, ",")]
+        idx_exprs = [_normalize_index(idx, iv_map, const_map, apply_map) for idx in _split_top_level(indices_raw, ",")]
 
         return AccessPattern(
             tensor_name=tensor,
@@ -853,17 +959,17 @@ class AffineExtractor:
         text: str,
         iv_map: Dict[str, str],
         const_map: Optional[Dict[str, Union[int, float]]] = None,
+        apply_map: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[AccessPattern], List[AccessPattern]]:
         reads: List[AccessPattern] = []
         writes: List[AccessPattern] = []
 
         for line in self._iter_clean_lines(text):
             if "affine.load" in line and "=" in line:
-                parsed = self._parse_load(line, "affine.load", True, iv_map, const_map)
+                parsed = self._parse_load(line, "affine.load", True, iv_map, const_map, apply_map)
                 if parsed is not None:
                     reads.append(parsed)
                 elif "affine.load" in line:
-                    # Parse attempt failed; diagnostic already logged in _parse_load
                     self._add_diagnostic(
                         'warning',
                         '_collect_accesses',
@@ -873,7 +979,7 @@ class AffineExtractor:
                 continue
 
             if "memref.load" in line and "=" in line:
-                parsed = self._parse_load(line, "memref.load", False, iv_map, const_map)
+                parsed = self._parse_load(line, "memref.load", False, iv_map, const_map, apply_map)
                 if parsed is not None:
                     reads.append(parsed)
                 elif "memref.load" in line:
@@ -886,7 +992,7 @@ class AffineExtractor:
                 continue
 
             if "affine.store" in line:
-                parsed = self._parse_store(line, "affine.store", True, iv_map, const_map)
+                parsed = self._parse_store(line, "affine.store", True, iv_map, const_map, apply_map)
                 if parsed is not None:
                     writes.append(parsed)
                 elif "affine.store" in line:
@@ -899,7 +1005,7 @@ class AffineExtractor:
                 continue
 
             if "memref.store" in line:
-                parsed = self._parse_store(line, "memref.store", False, iv_map, const_map)
+                parsed = self._parse_store(line, "memref.store", False, iv_map, const_map, apply_map)
                 if parsed is not None:
                     writes.append(parsed)
                 elif "memref.store" in line:

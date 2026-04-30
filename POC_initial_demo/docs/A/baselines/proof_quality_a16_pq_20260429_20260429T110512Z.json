@@ -1,0 +1,92 @@
+{
+  "artifact_type": "proof_quality_summary",
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-04-29T11:05:12.862125+00:00",
+  "label": "a16_pq_20260429",
+  "target": "linalg",
+  "z3_timeout_ms": 10000,
+  "fixtures_dir": "C:\\Users\\user\\Music\\LoopHole\\POC_initial_demo\\tests\\fixtures",
+  "fixtures_fingerprint_sha256": "c2757f41238c90d1dab6daff5dcf10f4a27b3cc49abfbc1c57f5e365d62dfc1d",
+  "proof_quality_summary": {
+    "total_kernels": 23,
+    "proof_rate": 0.7826,
+    "strict_acceptance_rate": 0.7826,
+    "avg_confidence": 0.7768,
+    "avg_confidence_proved": 0.9926,
+    "fully_confident_count": 14,
+    "confidence_distribution": {
+      "perfect_1_0": 14,
+      "high_0_9_to_1_0": 4,
+      "below_0_9": 5
+    },
+    "per_sketch_breakdown": {
+      "linalg.conv_1d_ncw_fcw": {
+        "proved": 2,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 2
+      },
+      "linalg.conv_2d": {
+        "proved": 2,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 2
+      },
+      "linalg.dot": {
+        "proved": 2,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 2
+      },
+      "linalg.matvec": {
+        "proved": 4,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 4
+      },
+      "linalg.reduce{arith.addf}_rowsum": {
+        "proved": 3,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 3
+      },
+      "linalg.matmul": {
+        "proved": 3,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 3
+      },
+      "_no_match": {
+        "proved": 0,
+        "refuted": 5,
+        "unproved_timeout": 0,
+        "total": 5
+      },
+      "linalg.map{arith.addf}": {
+        "proved": 1,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 1
+      },
+      "linalg.transpose": {
+        "proved": 1,
+        "refuted": 0,
+        "unproved_timeout": 0,
+        "total": 1
+      }
+    },
+    "refuted_kernels": [
+      "corpus/frontend_no_loop_vectorized.mlir",
+      "corpus/polygeist_affine_apply_indices.mlir",
+      "corpus/polygeist_conv1d_scf.mlir",
+      "corpus/polygeist_dot_iter_args.mlir",
+      "corpus/polygeist_if_guarded_store.mlir"
+    ],
+    "corpus_refuted_count": 5,
+    "unexpected_refuted_count": 0,
+    "proof_quality_grade": "B"
+  },
+  "trend": {
+    "available": false
+  }
+}

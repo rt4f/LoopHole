@@ -194,10 +194,151 @@ def _build_canonical_stablehlo_summary(target: str, rows: List[Dict]) -> Dict:
     }
 
 
+def _build_proof_quality_summary(rows: List[Dict]) -> Dict:
+    total = len(rows)
+    if total == 0:
+        return {
+            "total_kernels": 0,
+            "proof_rate": 0.0,
+            "strict_acceptance_rate": 0.0,
+            "avg_confidence": 0.0,
+            "avg_confidence_proved": 0.0,
+            "fully_confident_count": 0,
+            "confidence_distribution": {"perfect_1_0": 0, "high_0_9_to_1_0": 0, "below_0_9": 0},
+            "per_sketch_breakdown": {},
+            "refuted_kernels": [],
+            "corpus_refuted_count": 0,
+            "unexpected_refuted_count": 0,
+            "proof_quality_grade": "F",
+        }
+
+    proved_rows = [r for r in rows if r.get("state") == "PROVED"]
+    refuted_rows = [r for r in rows if r.get("state") == "REFUTED"]
+
+    proof_rate = len(proved_rows) / total
+    strict_acceptance_rate = sum(1 for r in rows if r.get("accepted_strict")) / total
+
+    confidences = [r.get("confidence", 0.0) for r in rows]
+    confidences_proved = [r.get("confidence", 0.0) for r in proved_rows]
+    avg_confidence = _safe_mean(confidences)
+    avg_confidence_proved = _safe_mean(confidences_proved)
+
+    fully_confident_count = sum(
+        1 for r in proved_rows if r.get("confidence", 0.0) >= 1.0
+    )
+
+    confidence_distribution = {
+        "perfect_1_0": sum(1 for c in confidences if c >= 1.0),
+        "high_0_9_to_1_0": sum(1 for c in confidences if 0.9 <= c < 1.0),
+        "below_0_9": sum(1 for c in confidences if c < 0.9),
+    }
+
+    per_sketch: Dict[str, Dict] = {}
+    for row in rows:
+        sketch = row.get("sketch") or "_no_match"
+        if sketch not in per_sketch:
+            per_sketch[sketch] = {"proved": 0, "refuted": 0, "unproved_timeout": 0, "total": 0}
+        per_sketch[sketch]["total"] += 1
+        state = row.get("state", "REFUTED")
+        if state == "PROVED":
+            per_sketch[sketch]["proved"] += 1
+        elif state == "REFUTED":
+            per_sketch[sketch]["refuted"] += 1
+        elif state == "UNPROVED_TIMEOUT":
+            per_sketch[sketch]["unproved_timeout"] += 1
+
+    refuted_kernels = [r.get("file_rel", r.get("file_name", "?")) for r in refuted_rows]
+
+    corpus_refuted_count = sum(
+        1 for r in refuted_rows
+        if r.get("file_rel", "").startswith("corpus/")
+    )
+    unexpected_refuted_count = len(refuted_rows) - corpus_refuted_count
+
+    if strict_acceptance_rate >= 0.90 and unexpected_refuted_count == 0:
+        grade = "A"
+    elif strict_acceptance_rate >= 0.75:
+        grade = "B"
+    elif strict_acceptance_rate >= 0.60:
+        grade = "C"
+    elif strict_acceptance_rate >= 0.40:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return {
+        "total_kernels": total,
+        "proof_rate": round(proof_rate, 4),
+        "strict_acceptance_rate": round(strict_acceptance_rate, 4),
+        "avg_confidence": round(avg_confidence, 4),
+        "avg_confidence_proved": round(avg_confidence_proved, 4),
+        "fully_confident_count": fully_confident_count,
+        "confidence_distribution": confidence_distribution,
+        "per_sketch_breakdown": per_sketch,
+        "refuted_kernels": refuted_kernels,
+        "corpus_refuted_count": corpus_refuted_count,
+        "unexpected_refuted_count": unexpected_refuted_count,
+        "proof_quality_grade": grade,
+    }
+
+
+def _render_proof_quality_section(pq: Dict) -> List[str]:
+    grade = pq.get("proof_quality_grade", "?")
+    lines = [
+        "## Proof Quality Summary",
+        "",
+        f"- Grade: **{grade}**",
+        f"- Proof rate: {pq['proof_rate'] * 100:.1f}%  ({pq['total_kernels']} kernels)",
+        f"- Strict acceptance rate: {pq['strict_acceptance_rate'] * 100:.1f}%",
+        f"- Avg confidence (all): {pq['avg_confidence']:.3f}",
+        f"- Avg confidence (proved only): {pq['avg_confidence_proved']:.3f}",
+        f"- Fully confident (conf=1.0): {pq['fully_confident_count']}",
+        "",
+        "### Confidence Distribution",
+        "",
+        f"- Perfect (1.0): {pq['confidence_distribution']['perfect_1_0']}",
+        f"- High (0.9 to <1.0): {pq['confidence_distribution']['high_0_9_to_1_0']}",
+        f"- Below 0.9: {pq['confidence_distribution']['below_0_9']}",
+        "",
+    ]
+
+    if pq.get("refuted_kernels"):
+        unexpected = pq.get("unexpected_refuted_count", 0)
+        corpus = pq.get("corpus_refuted_count", 0)
+        lines.extend([
+            "### Refuted Kernels",
+            "",
+            f"- Corpus (expected unsupported): {corpus}",
+            f"- Unexpected: {unexpected}",
+            "",
+        ])
+        for k in pq["refuted_kernels"]:
+            lines.append(f"  - {k}")
+        lines.append("")
+
+    breakdown = pq.get("per_sketch_breakdown", {})
+    if breakdown:
+        lines.extend([
+            "### Per-Sketch Breakdown",
+            "",
+            "| Sketch | Total | Proved | Refuted | Timeout |",
+            "|---|---:|---:|---:|---:|",
+        ])
+        for sketch, counts in sorted(breakdown.items()):
+            lines.append(
+                f"| {sketch} | {counts['total']} | {counts['proved']} "
+                f"| {counts['refuted']} | {counts['unproved_timeout']} |"
+            )
+        lines.append("")
+
+    return lines
+
+
 def _render_markdown(payload: Dict) -> str:
     summary = payload["summary"]
     trend = payload.get("trend_summary", {})
     canonical = payload.get("canonical_stablehlo_summary", {})
+    pq = payload.get("proof_quality_summary", {})
 
     lines = [
         "# Weekly Benchmark Report",
@@ -261,6 +402,9 @@ def _render_markdown(payload: Dict) -> str:
             for rel_path in canonical["unmatched_files"]:
                 lines.append(f"- {rel_path}")
             lines.append("")
+
+    if pq:
+        lines.extend(_render_proof_quality_section(pq))
 
     lines.extend(
         [
@@ -362,11 +506,12 @@ def generate_report(
         regression_threshold_fraction=regression_threshold_fraction,
     )
     canonical_summary = _build_canonical_stablehlo_summary(target=target, rows=rows)
+    proof_quality_summary = _build_proof_quality_summary(rows)
     fixtures_fingerprint = _compute_fixtures_fingerprint(source_hashes)
 
     return {
-        "schema_version": "1.1",
-        "compatible_schema_versions": ["1.0"],
+        "schema_version": "1.2",
+        "compatible_schema_versions": ["1.0", "1.1"],
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "label": label,
         "target": target,
@@ -384,6 +529,7 @@ def generate_report(
         "summary": summary,
         "trend_summary": trend_summary,
         "canonical_stablehlo_summary": canonical_summary,
+        "proof_quality_summary": proof_quality_summary,
         "results": rows,
     }
 

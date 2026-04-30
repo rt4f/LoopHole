@@ -1,5 +1,5 @@
 // LoopHole: Automatically lifted from scalar loop nest (StableHLO target)
-// Source: transpose → stablehlo.transpose
+// Source: transpose -> stablehlo.transpose
 // Description: B[j,i] = A[i,j]  — StableHLO transpose
 
 module {

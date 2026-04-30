@@ -11,6 +11,7 @@ from loophole.tests.fixtures import (
     MATMUL_128_MLIR,
     MIXED_REALWORLD_MATMUL_MLIR,
     MATMUL_DYNAMIC_DIMS_MLIR,
+    MATMUL_ITER_ARGS_MLIR,
 )
 
 
@@ -116,3 +117,19 @@ class TestMatmulLiftPipeline:
         assert result.success or result.partial_success
         assert result.emitted_mlir is not None
         assert "?x?xf32" in result.emitted_mlir
+
+    def test_lift_iter_args_reduction_form_linalg(self):
+        """Regression: Polygeist iter_args SSA reduction form must lift to linalg.matmul."""
+        result = lift(MATMUL_ITER_ARGS_MLIR, target="linalg")
+        assert result.success, f"iter_args matmul lift failed: {result.summary()}"
+        assert result.matched_sketch is not None
+        assert "matmul" in result.matched_sketch.name.lower()
+
+    def test_lift_iter_args_reduction_form_stablehlo(self):
+        """Regression: Polygeist iter_args SSA reduction form must lift to stablehlo.dot_general."""
+        result = Lifter(target="stablehlo", strict_mode=True, z3_timeout_ms=10000).lift(
+            MATMUL_ITER_ARGS_MLIR
+        )
+        assert result.success, f"iter_args stablehlo lift failed: {result.summary()}"
+        assert result.matched_sketch is not None
+        assert result.matched_sketch.name == "stablehlo.dot_general"

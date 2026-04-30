@@ -486,13 +486,13 @@ def _print_lift_result(
     console.print(Panel("\n".join(header_lines), title="LoopHole Lift Result", border_style=border))
 
     if result.emitted_mlir:
-        console.print("\n[bold]Emitted MLIR:[/bold]")
-        syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=True)
-        console.print(syntax)
-
         if output:
             Path(output).write_text(result.emitted_mlir, encoding="utf-8")
             console.print(f"\n[dim]Written to: {output}[/dim]")
+
+        console.print("\n[bold]Emitted MLIR:[/bold]")
+        syntax = Syntax(result.emitted_mlir, "mlir", theme="monokai", line_numbers=True)
+        console.print(syntax)
 
     if report and result.verification:
         _print_verification_report(result.verification)
@@ -927,8 +927,8 @@ def _collect_batch_mlir_files(
               help="Optional JSON report path (default: <output-dir>/loophole_report.json)")
 @click.option("--include-glob", "include_globs", multiple=True, default=("**/*.mlir",), show_default=True,
               help="Glob pattern (relative to input dir) to include; repeatable")
-@click.option("--exclude-glob", "exclude_globs", multiple=True, default=(),
-              help="Glob pattern (relative to input dir) to exclude; repeatable")
+@click.option("--exclude-glob", "exclude_globs", multiple=True, default=("corpus/**",), show_default=True,
+              help="Glob pattern (relative to input dir) to exclude; repeatable. Default excludes corpus/ (known-unsupported forms)")
 @click.option("--max-files", type=int, default=None,
               help="Process at most N files after include/exclude filtering")
 @click.option("--table-limit", type=int, default=100, show_default=True,

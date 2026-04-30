@@ -30,6 +30,24 @@ This folder contains documentation for Person A work in the three-person paralle
 |---|---|---|
 | [06_a12_weak_kernel_hardening_completion.md](06_a12_weak_kernel_hardening_completion.md) | A-12 weak-kernel hardening completion and week-2 evidence | Done |
 
+### Sprint 3–5 (12-Week Plan V2): Symbolic Boundary, Replay, Parametric Proof
+
+| Doc | Task | Status |
+|---|---|---|
+| [07_a13_a14_a15_sprint3_closure.md](07_a13_a14_a15_sprint3_closure.md) | A-13 multi-reduction boundary, A-14 counterexample replay, A-15 shape-parametric proof | Done |
+
+### Sprint 6 (12-Week Plan V2): Proof-Quality Reporting
+
+| Doc | Task | Status |
+|---|---|---|
+| [08_a16_proof_quality_summary_closure.md](08_a16_proof_quality_summary_closure.md) | A-16 proof-quality summary artifact integration into weekly reports | Done |
+
+### Full Workflow Test
+
+| Doc | Task | Status |
+|---|---|---|
+| [fullworkflowtest/README.md](fullworkflowtest/README.md) | End-to-end C to StableHLO to GPU benchmark runbook and evidence log | Done |
+
 ## Scope Clarification
 
 Person A scope for Phase 1:

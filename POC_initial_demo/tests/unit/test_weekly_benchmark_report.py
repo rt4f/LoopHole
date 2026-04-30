@@ -104,7 +104,7 @@ def test_generate_report_emits_trend_and_canonical_summary(monkeypatch, tmp_path
         docker_image="ghcr.io/schizoid-man/loophole-polygeist:llvm17",
     )
 
-    assert payload["schema_version"] == "1.1"
+    assert payload["schema_version"] == "1.2"
     assert payload["trend_summary"]["available"] is True
     assert payload["trend_summary"]["delta"]["proved"] == -1
     assert payload["canonical_stablehlo_summary"]["applicable"] is True

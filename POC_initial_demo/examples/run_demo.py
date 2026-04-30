@@ -253,13 +253,21 @@ def run_matmul_verbose() -> None:
         console = Console()
         console.print(f"\n[bold]SymPy trace confidence:[/bold] {trace.confidence:.2f}")
         if best:
-            console.print(f"[bold]Best sketch match:[/bold] [yellow]{best.name}[/yellow]")
+            console.print(f"[bold]SymPy top candidate:[/bold] [dim]{best.name}[/dim]")
     else:
         print(f"\nSymPy trace confidence: {trace.confidence:.2f}")
         if best:
-            print(f"Best sketch match: {best.name}")
+            print(f"SymPy top candidate: {best.name}")
 
     result = lift(MATMUL_MLIR, target="linalg", z3_timeout_ms=DEMO_Z3_TIMEOUT_MS)
+
+    if HAS_RICH:
+        console = Console()
+        if result.matched_sketch:
+            console.print(f"[bold]Z3-verified sketch:[/bold] [yellow]{result.matched_sketch.name}[/yellow]")
+    else:
+        if result.matched_sketch:
+            print(f"Z3-verified sketch: {result.matched_sketch.name}")
     if (result.success or result.partial_success) and result.emitted_mlir:
         if HAS_RICH:
             console = Console()

@@ -369,3 +369,35 @@ Benchmark snapshot (linalg fixtures, 2026-04-26):
 - PROVED: 18 / REFUTED: 5 / TIMEOUT: 0
 - Accepted strict: 18
 - Average elapsed ms: 5.88
+
+---
+
+## 12.15 A-16 Completion Update (2026-04-29)
+
+Person A A-16 proof-quality summary artifact integration is complete. All Person A tasks for the 12-week cycle are now done.
+
+Scope closed:
+1. `_build_proof_quality_summary(rows)` added to `generate_weekly_benchmark_report.py` — computes proof_rate, strict_acceptance_rate, confidence distribution, per-sketch breakdown, corpus vs unexpected refuted counts, and proof_quality_grade (A/B/C/D/F).
+2. `_render_proof_quality_section(pq)` added — renders the proof-quality block into the weekly Markdown report.
+3. Both wired into `generate_report` payload and `_render_markdown`; report `schema_version` bumped to `"1.2"`.
+4. New standalone script `scripts/generate_proof_quality_summary.py` for emitting the proof-quality artifact independently with optional baseline trend delta.
+
+Evidence artifacts:
+1. `docs/A/08_a16_proof_quality_summary_closure.md`
+2. `docs/A/baselines/proof_quality_a16_pq_20260429_20260429T110512Z.json`
+3. `docs/A/baselines/proof_quality_a16_pq_20260429_20260429T110512Z.md`
+4. `tests/unit/test_a16_proof_quality_summary.py`
+
+Validation snapshot:
+1. A-16 tests: `15 passed`
+2. Full suite: `365 passed` (348 prior + 17 new, including schema-version test updates)
+
+Proof-quality baseline (linalg fixtures, 2026-04-29):
+- Grade: **B**
+- Total kernels: 23
+- Proof rate: 78.3% (18 proved / 5 refuted)
+- Strict acceptance rate: 78.3%
+- Avg confidence (proved only): 0.993
+- Fully confident (conf=1.0): 14
+- Corpus refuted (expected): 5
+- Unexpected refuted: **0**
