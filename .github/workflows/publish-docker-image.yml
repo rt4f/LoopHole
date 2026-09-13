@@ -6,8 +6,8 @@ on:
     branches:
       - main
     paths:
-      - POC_initial_demo/docker/Dockerfile
-      - POC_initial_demo/docker/toolchain.lock
+      - docker/polygeist/**
+      - packages/loophole/requirements.txt
       - .github/workflows/publish-docker-image.yml
 
 jobs:
@@ -49,8 +49,8 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
-          context: POC_initial_demo
-          file: POC_initial_demo/docker/Dockerfile
+          context: packages/loophole
+          file: docker/polygeist/Dockerfile
           push: true
           build-args: |
             BUILD_THREADS=2

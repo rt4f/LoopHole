@@ -13,7 +13,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: POC_initial_demo
+        working-directory: packages/loophole
 
     steps:
       - name: Checkout

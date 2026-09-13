@@ -24,7 +24,6 @@ MANIFEST
 venv/
 env/
 ENV/
-POC_initial_demo/.venv/
 
 # Pytest
 .pytest_cache/
@@ -67,6 +66,22 @@ Makefile
 lifted_*.mlir
 *.log
 reports/
+
+# Local scratch output (e.g. `loophole compile ... -o out/x.mlir`)
+out/
+
+# Research raw outputs (commit summaries in results/ instead)
+research/**/outputs/
+
+# LaTeX build artifacts (papers/)
+*.aux
+*.synctex.gz
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.out
 
 # OS
 .DS_Store

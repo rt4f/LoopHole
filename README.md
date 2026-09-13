@@ -1,64 +1,73 @@
-# LoopHole — Project Documentation Index
+# LoopHole
 
-**Project:** Automated Lifting and Synthesis of Legacy Code into Tensor IR  
-**Status:** Active implementation (documentation, planning, and working POC)  
-**Date:** February 2026
+**Automated lifting of legacy scalar loop code into MLIR tensor dialects.**
 
----
+LoopHole takes loop-based C/C++ kernels (via [Polygeist](https://github.com/llvm/Polygeist) → MLIR Affine IR),
+recognizes the tensor operation they implement, **proves equivalence with Z3**, and emits
+high-level **Linalg** or **StableHLO**. Downstream ML compilers (XLA, IREE) can then run the
+code on accelerators without manual rewriting.
 
-## What Is This Project?
+```
+C/C++ ──(Polygeist, in Docker)──▶ Affine IR ──(extract · sketch match · Z3 proof)──▶ Linalg / StableHLO ──▶ XLA · IREE · LLVM
+```
 
-**LoopHole** is a compiler research and engineering project aimed at automatically *lifting* legacy scalar loop-based code (C, C++, Fortran) written in element-wise, pointer-arithmetic style into high-level tensor dialects within the [MLIR](https://mlir.llvm.org/) (Multi-Level Intermediate Representation) ecosystem — specifically targeting the **Linalg** and **StableHLO** dialects.
+## Quick start
 
-Once lifted, these programs can be passed to domain-specific ML compilers (XLA, IREE) and executed on modern hardware accelerators (TPUs, GPUs, NPUs) with order-of-magnitude performance improvements, without any manual rewriting.
+Full instructions: **[SETUP.md](SETUP.md)**.
 
----
+```powershell
+docker build -f docker/polygeist/Dockerfile -t loophole-polygeist:llvm17 -t ghcr.io/schizoid-man/loophole-polygeist:llvm17 packages/loophole
+cd packages/loophole
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt; pip install -e ".[dev]"
+loophole lift-c examples/smoke_matmul.c --target linalg
+```
 
-## Documentation Structure
+## Repository layout
 
-| Document | Description |
+```
+LoopHole/
+├── packages/
+│   └── loophole/          Python package: lifter, Z3 verifier, emitters, CLI, tests, examples
+├── docker/
+│   └── polygeist/         Supported toolchain image (Polygeist cgeist + LLVM/MLIR 17)
+├── docs/                  All documentation (index: docs/README.md)
+│   ├── guides/            How-to
+│   ├── architecture/      How it works
+│   ├── background/        Problem statement, state of the art, references
+│   ├── planning/          Roadmaps and team plans
+│   ├── status/            Status reports, audits, handoffs
+│   ├── decisions/         Architecture Decision Records
+│   └── worklog/           Per-lane (A/B/C) sprint records
+├── research/              Research phase: experiments, benchmarks, notebooks
+├── papers/                Thesis report and IEEE paper (LaTeX)
+├── tools/legacy/          Superseded tooling (unsupported)
+├── .github/workflows/     CI and Docker image publishing
+├── SETUP.md               Environment setup
+└── CONTRIBUTING.md        Where things go and how to contribute
+```
+
+## Where to start reading
+
+| If you want to… | Read |
 |---|---|
-| [01 — Project Overview](./docs/01_project_overview.md) | Goals, motivation, problem scope, and success criteria |
-| [02 — State of the Art](./docs/02_state_of_the_art.md) | Comprehensive survey of all relevant SOTA frameworks, benchmarks, and limitations (mlirSynth, Tenspiler, Tensorize, STAGG, QiMeng-Xpiler, and more) |
-| [03 — MLIR Architecture Deep Dive](./docs/03_mlir_architecture.md) | Technical reference for the MLIR infrastructure, dialects used (Affine, SCF, Linalg, StableHLO, SparseTensor, Transform), and the compilation pipeline |
-| [04 — Implementation Roadmap](./docs/04_implementation_roadmap.md) | Step-by-step phased build plan: 3-month POC, 6-month extension, and long-term research phases with concrete deliverables |
-| [05 — Novel Research Directions](./docs/05_novel_research_directions.md) | Unexplored frontiers: sparse tensor synthesis, Transform dialect scheduling, dynamic shape inference, and auto-documentation |
-| [06 — References & Resources](./docs/06_references.md) | All papers, repositories, tools, benchmarks, and links cited throughout this documentation |
-| [07 — POC Implementation Audit](./docs/07_poc_implementation_audit.md) | Ground-truth implementation status, limitations, hardcoding/stubs inventory, and prioritized fix plan |
-| [08 — Three-Person Parallel Execution Plan](./docs/08_three_person_parallel_execution_plan.md) | Execution-ready task graph for three contributors with dependencies, checkpoints, and metrics |
-| [09 — Docker/Polygeist Delivery Handoff](./docs/09_docker_polygeist_delivery_handoff.md) | Full change log, validation evidence, drawbacks, limitations, and distribution plan for prebuilt images |
-| [10 — Project Status: Achievements, Limitations, and Failure Analysis](./docs/10_project_status_achievements_limitations.md) | Consolidated project-wide status synthesis across core docs and A/B/C execution lanes |
-| [11 — Future Plan and Improvement Strategy](./docs/11_future_plan_and_improvements.md) | Prioritized improvement roadmap with trust, robustness, coverage, and operational targets |
-| [12 — Three-Person Parallel Plan V2 (12 Weeks)](./docs/12_three_person_parallel_plan_v2_12_weeks.md) | New execution-ready 12-week parallel plan with role split, sprint gates, dependencies, and metrics |
-| [POC Docker Polygeist Quickstart](./POC_initial_demo/docker/README.md) | Reproducible Polygeist+MLIR container with two-step C/C++ compile-then-lift workflow |
-| [Person C Lane Docs](./docs/C/README.md) | Phase 2 to Phase 4 workflow docs including quickstart/runbooks, weekly trend dashboards, canonical StableHLO suite, release readiness, and research decision package |
+| Run it | [SETUP.md](SETUP.md) |
+| Understand the problem | [Problem statement](docs/background/problem-statement.md) → [Project overview](docs/background/project-overview.md) → [State of the art](docs/background/state-of-the-art.md) |
+| Understand the code | [POC documentation](docs/architecture/poc-documentation.md), [package README](packages/loophole/README.md) |
+| Know where the project stands | [Project status](docs/status/project-status.md) → [Future plan](docs/planning/future-plan.md) → [Plan v2](docs/planning/three-person-execution-plan-v2-12-weeks.md) |
+| Start research work | [research/](research/README.md), [Novel research directions](docs/background/novel-research-directions.md) |
+| Add something to the repo | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| See everything | [docs/README.md](docs/README.md) |
 
----
+## State of the art (Feb 2026)
 
-## Quick-Start: Core Concepts
-
-1. **Program Lifting / Raising** — The reverse of compilation lowering. Takes low-level scalar loops and reconstructs their high-level mathematical intent as tensor operations.
-2. **MLIR Dialect** — A modular, composable IR abstraction in the MLIR framework. Key dialects for this project: `affine`, `linalg`, `stablehlo`, `scf`, `sparse_tensor`, `transform`.
-3. **Program Synthesis** — Automated construction of programs that satisfy a given specification, verified either by I/O testing, formal SMT proving, or algebraic equivalence.
-4. **Neuro-Symbolic Synthesis** — Combining LLM-based pattern recognition with rigorous formal verification to guide and prune the synthesis search space.
-
----
-
-## Key Performance Benchmarks (SOTA as of Feb 2026)
-
-| Framework | Venue | Best Speedup | Mechanism |
+| Framework | Venue | Best speedup | Mechanism |
 |---|---|---|---|
 | mlirSynth | PACT 2023 | 21.6× (TPU) | Bottom-up enumerative synthesis |
 | Tenspiler | ECOOP 2024 | 105× (kernel avg) | SMT-verified lifting via Rosette |
 | Tensorize | CGO 2025 | **4,102× (GPU)** | Symbolic tracing + algebraic solving |
-| STAGG | PLDI 2025 | 99% accuracy, 3.19s avg | LLM-guided probabilistic grammar + A\* |
+| STAGG | PLDI 2025 | 99% accuracy, 3.19 s avg | LLM-guided probabilistic grammar + A\* |
 
----
+## License
 
-## How To Use This Documentation
-
-- If you are **starting from scratch**, read documents in order: `01 → 02 → 03 → 04`.
-- If you want to **understand what has already been done** and avoid duplicating existing work, focus on `02` (State of the Art) and `05` (Novel Research Directions).
-- If you want to **start implementing** the 3-month POC, jump directly to `04` (Implementation Roadmap).
-- If you want a **current project reality snapshot**, start with `10`, then `11`, then `12`.
-- For **dialect-level MLIR API reference**, see `03` (Architecture Deep Dive).
+See [LICENSE](LICENSE).
