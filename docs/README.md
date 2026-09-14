@@ -1,6 +1,18 @@
 # LoopHole Documentation
 
-Start with [SETUP.md](../SETUP.md) to get running, then use this index.
+Start with the [engineering handbook](handbook/README.md) (the current, verified description of the code) and [SETUP.md](../SETUP.md) to get running, then use this index.
+
+> Many documents below are historical records written during the April 2026 sprints. Numbers they quote (tests passing, kernels proved, proof-quality grades) predate the September 2026 audit in handbook Part 5 and should not be treated as current. Handbook Part 1, chapter "The Documentation Landscape", rates each document.
+
+## Handbook — start here
+
+| Doc | Description |
+|---|---|
+| [Part 1: Orientation](handbook/01-orientation.pdf) | Problem, MLIR/Polygeist/Z3 primer, glossary, repo tour, history, which docs to trust |
+| [Part 2: Architecture](handbook/02-architecture.pdf) | Pipeline, data model, worked matmul example, decision logic, configuration |
+| [Part 3: Module reference](handbook/03-module-reference.pdf) | Every module: internals, drawbacks, tests, change guide |
+| [Part 4: Toolchain, tests, CI](handbook/04-toolchain-tests-ci.pdf) | Docker image, workflows, test suite, reports, runbooks, troubleshooting |
+| [Part 5: Tech-debt audit](handbook/05-tech-debt-audit.pdf) | Verified defects, priority register, remediation plan mapped to Plane tasks |
 
 ## Guides — how to do things
 
