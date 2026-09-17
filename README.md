@@ -51,6 +51,7 @@ LoopHole/
 
 | If you want to… | Read |
 |---|---|
+| Understand everything from scratch (start here) | [Engineering handbook](docs/handbook/README.md): five PDFs covering orientation, architecture, every module, toolchain/tests/CI, and the tech-debt audit |
 | Run it | [SETUP.md](SETUP.md) |
 | Understand the problem | [Problem statement](docs/background/problem-statement.md) → [Project overview](docs/background/project-overview.md) → [State of the art](docs/background/state-of-the-art.md) |
 | Understand the code | [POC documentation](docs/architecture/poc-documentation.md), [package README](packages/loophole/README.md) |
