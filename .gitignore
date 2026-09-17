@@ -100,3 +100,7 @@ desktop.ini
 polybench_results/
 benchmark_*.json
 benchmark_*.csv
+
+# Claude Code (local agent settings, worktrees, and local instructions)
+.claude/
+CLAUDE.md
