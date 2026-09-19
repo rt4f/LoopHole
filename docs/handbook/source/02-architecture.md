@@ -35,7 +35,7 @@ All lifting goes through `Lifter.lift(mlir_text)` in `lifter.py`. The stages, wi
 | 0 (optional) Frontend | `polygeist_frontend.PolygeistFrontend.generate_mlir`, or `cli.compile_cmd` | C/C++ files | MLIR text | Raises `PolygeistFrontendError` (CLI prints a panel and exits 2) |
 | 1 Parse | `affine_extractor.AffineExtractor.extract` | MLIR text (one function expected) | `LoopNestInfo` | Almost never raises; records `ParsingWarning` diagnostics and returns partial data (for example `func_name="unknown"`) |
 | 2 Match | `Lifter._match_candidates` using `structural_match` and `SympyTracer` | `LoopNestInfo` | up to `2*top_k` (sketch, confidence) pairs | Empty list leads to a result with `verification=None` |
-| 3 Verify | `Lifter._verify_candidates` using `Z3EquivalenceChecker.check` | `LoopNestInfo`, candidates | best (sketch, `VerificationReport`, confidence) or `None` | ENCODE_ERROR and STRUCTURAL_MISMATCH reports are dropped |
+| 3 Verify | `Lifter._verify_candidates` using `Z3EquivalenceChecker.check` | `LoopNestInfo`, candidates | `_CandidateVerification`: `best` (sketch, `VerificationReport`, confidence) or `None`, plus `no_verdict` reports | ENCODE_ERROR and STRUCTURAL_MISMATCH reports surface only when no candidate reaches a verdict |
 | 4 Emit | `LinalgEmitter.emit` or `StableHLOEmitter.emit` via `Lifter._emit` | sketch, `LoopNestInfo` | MLIR text | `EmissionError` becomes `LiftResult.error` |
 | 5 (optional) Validate | `mlir_validator.validate_mlir_artifact` (only called by `batch`) | MLIR text | `MlirValidationResult` | Non-zero exit of the verifier marks failure; batch exits 1 at the end |
 
@@ -293,8 +293,8 @@ Differences from the fixture: numbered SSA names, the accumulator is a loop bloc
 2. If `EQUIVALENT`, return immediately with this candidate.
 3. If `TIMEOUT` or `UNKNOWN`, remember the first such candidate as the timeout fallback.
 4. If `NOT_EQUIVALENT` and the sketch is a convolution, build a strided variant (coefficients from the input index expressions) and check again; an `EQUIVALENT` result returns the *original* sketch with the strided report. Remember the first refuted candidate.
-5. `ENCODE_ERROR` and `STRUCTURAL_MISMATCH` are ignored.
-6. After the loop return the timeout fallback if any, otherwise the refuted candidate, otherwise `None`.
+5. Any other result (`ENCODE_ERROR`, `STRUCTURAL_MISMATCH`) is kept in `no_verdict`.
+6. After the loop, `best` is the timeout fallback if any, otherwise the refuted candidate, otherwise `None`. When it is `None`, `lift` sets `error` to "None of the N checked candidates reached a Z3 verdict." followed by each candidate's sketch, result and notes. When `best` is set, the `no_verdict` reports are not shown anywhere.
 
 Because the first `EQUIVALENT` wins, **a wrong sketch that proves beats a right sketch that is refuted**. Combined with an unsound encoding, this ordering is how the `elementwise_mul` fixture ends up as a scale operation (Part 5, F-02).
 
@@ -372,7 +372,7 @@ So both sides are "payload applied to reads at indices"; they differ only in whi
 | Concrete unroll (`_unrolled_reduction`) | All reduction bounds are integers and each range is at most `unroll_threshold` (32) | Python loop builds `term(k=lo) + ... + term(k=hi-1)` | Product of ranges grows fast (a 3x3x2 conv is 18 terms per output) |
 | Guarded symbolic unroll (single IV) | One reduction IV, symbolic upper bound, maximum inferable from a static tensor extent | Sum up to the inferred maximum with `If(k < hi, total + term, total)` | Proves only for bounds up to the static extent |
 | Guarded multi-reduction unroll (A-13) | Several reduction IVs, each upper bound inferable, total iterations at most 32 squared | Cartesian product with conjunctive guards | Same; cartesian blow-up guard |
-| Recursive function (`_recfunc_reduction`) | Single reduction IV, not inferable or larger than 32 | `RecFunction` with `acc(k) = If(k == lo, 0, acc(k-1) + body(k-1))` | Name collision across checks makes the second use fail (F-06); conv sketch arity bug; multi-reduction raises `_UnsupportedReductionForm` |
+| Recursive function (`_recfunc_reduction`) | Single reduction IV, not inferable or larger than 32 | `RecFunction` with `acc(k) = If(k == lo, 0, acc(k-1) + body(k-1))` | Multi-reduction raises `_UnsupportedReductionForm` |
 
 Max reductions start from the constant `-1e30` instead of a true minus infinity (F-07).
 

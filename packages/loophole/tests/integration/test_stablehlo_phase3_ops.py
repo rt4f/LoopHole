@@ -6,7 +6,7 @@ C-08/C-09/C-10:
 - Integration coverage for transpose, elementwise, dot variants, and reduce
 """
 
-from loophole.lifter import Lifter, lift, LiftResultState
+from loophole.lifter import Lifter, lift, LiftResultState, _CandidateVerification
 from loophole.z3_checker import CheckResult, VerificationReport
 from loophole.tests.fixtures import (
     CONV_1D_MLIR,
@@ -72,7 +72,7 @@ def test_stablehlo_elementwise_multiply_is_proved_and_emitted() -> None:
             elapsed_ms=0.0,
             notes="Forced equivalent for strict stablehlo multiply path",
         )
-        return (sketch, report, conf)
+        return _CandidateVerification(best=(sketch, report, conf))
 
     lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
     result = lifter.lift(ELEMENTWISE_MUL_MLIR)

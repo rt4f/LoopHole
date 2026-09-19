@@ -3,7 +3,7 @@ Integration test — full lift pipeline for matrix multiply.
 Parse → match → verify → emit.
 """
 import pytest
-from loophole.lifter import lift, Lifter, LiftResult
+from loophole.lifter import lift, Lifter, LiftResult, LiftResultState
 from loophole.mlir_validator import validate_mlir_artifact
 from loophole.z3_checker import CheckResult
 from loophole.tests.fixtures import (
@@ -74,13 +74,14 @@ class TestMatmulLiftPipeline:
             assert result.sympy_confidence > 0.0
 
     def test_lift_larger_matmul(self):
-        """Larger bounds: Z3 may timeout but lift should still return a result."""
+        """A 128-long reduction is encoded with Z3 recursive functions, and the
+        conv candidate is checked first; matmul must still encode afterwards.
+        At 3 s Z3 normally times out rather than proving, so both are accepted."""
         result = lift(MATMUL_128_MLIR, z3_timeout_ms=3000)
         assert isinstance(result, LiftResult)
-        # Under strict emission policies, an unproved match can still fail to emit.
-        if not (result.success or result.partial_success):
-            assert result.error is not None
-            assert "Emission error while generating" in result.error
+        assert result.sketch_name == "linalg.matmul"
+        assert result.result_state in (LiftResultState.PROVED, LiftResultState.UNPROVED_TIMEOUT)
+        assert "already defined" not in result.verification.notes
 
     def test_lift_fails_on_missing_shape_metadata(self):
         """B-05: emission must fail when required tensor shape metadata is missing."""

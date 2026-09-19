@@ -2,6 +2,8 @@
 Unit tests for the Z3 equivalence checker.
 Tests both the structural pre-filter and the full SMT check.
 """
+from pathlib import Path
+
 import pytest
 from z3.z3 import Int, IntVal, simplify, substitute
 from loophole.affine_extractor import AffineExtractor
@@ -13,6 +15,7 @@ from loophole.tests.fixtures import (
     DOT_PRODUCT_MLIR,
     DOT_PRODUCT_SYMBOLIC_N_MLIR,
     ELEMENTWISE_ADD_MLIR,
+    MATMUL_128_MLIR,
     REDUCE_SUM_MLIR,
 )
 
@@ -85,6 +88,56 @@ class TestZ3Verification:
         # Should either be NOT_EQUIVALENT, STRUCTURAL_MISMATCH, or similar non-EQUIVALENT
         assert report.result != CheckResult.EQUIVALENT, \
             "matmul should NOT be equivalent to elementwise_add"
+
+
+class TestRecursiveReductionIsolation:
+    """Reductions longer than the unroll threshold are encoded with a Z3
+    RecFunction. Z3 registers those names process-wide, so every check must
+    define its own, or the second check of the same kernel cannot encode."""
+
+    def test_two_sketches_on_one_kernel_both_encode(self, extractor):
+        info = extractor.extract(MATMUL_128_MLIR)
+        checker = Z3EquivalenceChecker(timeout_ms=1000)
+
+        conv_report = checker.check(info, SKETCH_BY_NAME["linalg.conv_1d_ncw_fcw"])
+        matmul_report = checker.check(info, SKETCH_BY_NAME["linalg.matmul"])
+
+        assert "already defined" not in conv_report.notes
+        assert "already defined" not in matmul_report.notes
+        assert matmul_report.result != CheckResult.ENCODE_ERROR, matmul_report.notes
+
+    def test_fresh_checker_instances_do_not_share_definitions(self, extractor):
+        info = extractor.extract(MATMUL_128_MLIR)
+        sketch = SKETCH_BY_NAME["linalg.matmul"]
+
+        first = Z3EquivalenceChecker(timeout_ms=1000).check(info, sketch)
+        second = Z3EquivalenceChecker(timeout_ms=1000).check(info, sketch)
+
+        assert first.result != CheckResult.ENCODE_ERROR, first.notes
+        assert second.result != CheckResult.ENCODE_ERROR, second.notes
+
+
+class TestSketchOperandRank:
+    @pytest.mark.parametrize("sketch_name", ["linalg.conv_1d_ncw_fcw", "stablehlo.convolution_1d"])
+    def test_rank_mismatch_is_reported_as_encode_error(self, extractor, checker, sketch_name):
+        # The conv filter map yields one index; the matmul tensor bound to it has two.
+        info = extractor.extract(MATMUL_MLIR)
+        report = checker.check(info, SKETCH_BY_NAME[sketch_name])
+
+        assert report.result == CheckResult.ENCODE_ERROR
+        assert "unsupported_form=sketch_operand_rank_mismatch" in report.notes, report.notes
+        assert "Wrong number of arguments" not in report.notes
+
+    @pytest.mark.parametrize("sketch_name", ["linalg.matvec", "stablehlo.reduce{add}"])
+    def test_output_rank_mismatch_is_reported_as_encode_error(self, extractor, checker, sketch_name):
+        # The sketch output map yields one index; the conv output tensor bound to it has two.
+        corpus = Path(__file__).resolve().parents[1] / "fixtures" / "corpus"
+        info = extractor.extract((corpus / "polygeist_conv1d_scf.mlir").read_text(encoding="utf-8"))
+        report = checker.check(info, SKETCH_BY_NAME[sketch_name])
+
+        assert report.result == CheckResult.ENCODE_ERROR
+        assert "unsupported_form=sketch_operand_rank_mismatch" in report.notes, report.notes
+        assert "Wrong number of arguments" not in report.notes
 
 
 class TestVerificationReport:

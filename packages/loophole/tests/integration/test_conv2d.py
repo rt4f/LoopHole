@@ -1,7 +1,7 @@
 """
 Integration test — full lift pipeline for 2D convolution.
 """
-from loophole.lifter import lift, Lifter, LiftResult, LiftResultState
+from loophole.lifter import lift, Lifter, LiftResult, LiftResultState, _CandidateVerification
 from loophole.mlir_validator import validate_mlir_artifact
 from loophole.z3_checker import CheckResult, VerificationReport
 from loophole.tests.fixtures import (
@@ -59,7 +59,7 @@ class TestConv2DSimpleLiftPipeline:
                 elapsed_ms=0.0,
                 notes="Forced equivalent for emission-path test",
             )
-            return (sketch, report, conf)
+            return _CandidateVerification(best=(sketch, report, conf))
 
         lifter._emit = _emit_without_output_shape  # type: ignore[assignment]
         lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
@@ -110,7 +110,7 @@ class TestConv2DAttrInference:
                 elapsed_ms=0.0,
                 notes="Forced equivalent for artifact validation path",
             )
-            return (sketch, report, conf)
+            return _CandidateVerification(best=(sketch, report, conf))
 
         lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
         result = lifter.lift(CONV_2D_STRIDED_DILATED_MLIR)
@@ -133,7 +133,7 @@ class TestConv2DAttrInference:
                 elapsed_ms=0.0,
                 notes="Forced equivalent for reordered-conv emission test",
             )
-            return (sketch, report, conf)
+            return _CandidateVerification(best=(sketch, report, conf))
 
         lifter._verify_candidates = _verify_equivalent  # type: ignore[assignment]
         result = lifter.lift(CONV_2D_STRIDED_DILATED_REORDERED_MLIR)

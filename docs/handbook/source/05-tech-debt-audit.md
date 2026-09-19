@@ -81,9 +81,10 @@ c += 2*A[k]*B[k]                          linalg -> PROVED linalg.dot           
 ## F-06: Z3 recursive-function names collide; large reductions never verify; CI red
 
 - **Severity:** High. **Category:** code and infrastructure. **Tracked:** T2 (LOOPH-10).
+- **Status:** fixed by LOOPH-10. RecFunction names get a process-wide serial suffix (`_fresh_rec_name`); sketch/tensor rank mismatches raise a named ENCODE_ERROR (`_check_operand_rank`); the lifter names candidates that reached no verdict instead of reporting "failed Z3 verification". Re-checking every fixture changed two verdicts (`MATMUL_128_MLIR` with `linalg.matmul` and `stablehlo.dot_general`, ENCODE_ERROR to TIMEOUT). Nothing newly proved.
 - **Where:** `z3_checker.py` 1225 and 1521 build names from `func_name` and IV only; Z3 recursive definitions are process-global.
 - **Reproduction:** on `MATMUL_128_MLIR` the notes are `linalg.conv_1d_ncw_fcw -> ENCODE_ERROR: Wrong number of arguments (1) passed to function (declare-fun B (Int Int) Real)` and `linalg.matmul -> ENCODE_ERROR: recursive function _acc_matmul_128_k already defined`. The lifter drops both and reports "All 2 candidates failed Z3 verification." This is exactly the failure in CI run 34763839671 on `main` (1 failed, 364 passed). Why the same test passed in April was not investigated; `z3-solver` is unpinned and a newer release is a plausible trigger.
-- **Also:** the conv sketch's recursive encoding has an arity bug (the error above), so conv kernels with more than 32 kernel iterations can never verify either.
+- **Also:** the arity error above is not specific to recursive encodings. Sketch operands are bound to source tensor functions whose arity is the tensor's rank, then applied with the sketch indexing map's rank. On every path, input and output, a mismatch raised a raw Z3 error: "Wrong number of arguments" or "index out of bounds". In a sweep of every sketch over every fixture just before the fix, that accounted for 45 of the 48 ENCODE_ERRORs; the other 3 were the name collision.
 
 ## F-07: Output initial value and max sentinel not modelled
 
@@ -125,7 +126,7 @@ conv1d          -> error: 'linalg.conv_1d_ncw_fcw' op expected operand rank (2) 
 ## F-12: Result states conflate failures with refutations
 
 - **Severity:** Medium. **Category:** code and metrics. **Tracked:** T10 (LOOPH-18).
-- **Where:** `LiftResult.result_state` (`lifter.py` 236-244) returns REFUTED whenever `verification is None`; `_verify_candidates` (603-652) silently discards ENCODE_ERROR and STRUCTURAL_MISMATCH reports.
+- **Where:** `LiftResult.result_state` (`lifter.py` 236-244) returns REFUTED whenever `verification is None`; `_verify_candidates` (620-675) reports ENCODE_ERROR and STRUCTURAL_MISMATCH candidates only when no candidate reaches a verdict (since LOOPH-10); otherwise they are still discarded.
 - **Reproduction:** input `"this is not mlir at all"` gives state REFUTED with error "No sketch candidates passed structural pre-filter." and `func_name` `unknown`. The weekly report's "corpus refuted (expected) 5" are parse or no-match failures.
 
 ## F-13: Strict CLI exit code 2 is unreachable with the real lifter
