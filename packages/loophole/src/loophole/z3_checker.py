@@ -24,6 +24,7 @@ concrete sum — this is dramatically faster than quantified reasoning.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import time
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from z3.z3 import (
-    And, ArithRef, ArrayRef, ArraySort, BoolRef, ExprRef, ForAll, Function,
+    And, ArithRef, ArrayRef, ArraySort, BoolRef, ExprRef, ForAll, FuncDeclRef, Function,
     If, IntSort, Not, Or, RealSort, RealVal, RecAddDefinition, RecFunction,
     Solver, Sum, Then, Tactic, Implies, Int, Ints, Real, Reals,
     is_expr, sat, unsat, unknown, simplify, substitute, Array, Store, Select,
@@ -80,6 +81,11 @@ class _UnsupportedReductionForm(Exception):
         self.reduction_vars = reduction_vars
 
 
+class _SketchOperandRankMismatch(Exception):
+    """Internal: a sketch indexing map yields a different number of indices
+    than the rank of the tensor bound to that operand."""
+
+
 @dataclass
 class VerificationReport:
     result: CheckResult
@@ -111,8 +117,40 @@ def _make_tensor_func(name: str, rank: int) -> Any:
     return Function(name.lstrip('%').replace('.', '_'), *sorts)
 
 
+# Z3 keeps RecFunction definitions in one process-wide table and refuses to
+# define a name twice, even from a new Solver or a new checker instance.
+_REC_FUNC_SERIAL = itertools.count()
+
+
+def _fresh_rec_name(base: str) -> str:
+    """Return a RecFunction name that no earlier definition in this process used."""
+    return f"{base}_{next(_REC_FUNC_SERIAL)}"
+
+
 def _apply_func(func: Any, indices: List[ArithRef]) -> ArithRef:
     return func(*indices)
+
+
+def _tensor_rank(func: Any) -> int:
+    """Number of indices a tensor term takes; rank-0 tensors are plain Reals."""
+    return func.arity() if isinstance(func, FuncDeclRef) else 0
+
+
+def _check_operand_rank(
+    sketch: OperationSketch,
+    op_idx: int,
+    map_str: str,
+    indices: List[ArithRef],
+    func: Any,
+) -> None:
+    """Raise if a sketch operand's indexing map and its bound tensor disagree on rank."""
+    if indices and len(indices) != _tensor_rank(func):
+        raise _SketchOperandRankMismatch(
+            f"unsupported_form=sketch_operand_rank_mismatch | sketch={sketch.name} | "
+            f"operand={op_idx} | map={map_str} | map_rank={len(indices)} | "
+            f"tensor={func} | tensor_rank={_tensor_rank(func)} | "
+            f"hint=this sketch's operand shapes cannot describe the loop nest"
+        )
 
 
 def _z3_int(val: Union[int, str]) -> ArithRef:
@@ -1222,7 +1260,7 @@ class Z3EquivalenceChecker:
 
         # Build parameter list for RecFunction: parallel IVs + reduction IV
         par_ivs = loop.parallel_vars
-        rec_name = f"_acc_{loop.func_name}_{red_iv}"
+        rec_name = _fresh_rec_name(f"_acc_{loop.func_name}_{red_iv}")
         param_sorts = [IntSort()] * (len(par_ivs) + 1) + [RealSort()]
 
         acc_func = RecFunction(rec_name, *param_sorts)
@@ -1318,6 +1356,7 @@ class Z3EquivalenceChecker:
         if not out_indices and len(out_shape) == 1 and out_shape[0] == 1:
             # Dot-like scalar outputs are often represented as memref<1xT>; map () to [0].
             out_indices = [IntVal(0)]
+        _check_operand_rank(sketch, sketch.num_inputs, out_map_str, out_indices, out_func)
 
         if not parallel_ivs:
             out_val = out_func(*out_indices) if out_indices else Real(str(out_func))
@@ -1518,7 +1557,9 @@ class Z3EquivalenceChecker:
         lo_expr = self._bound_expr(lo)
         hi_expr = self._bound_expr(hi)
 
-        acc_func = RecFunction(f"_sketch_acc_{loop.func_name}_{red_loop_iv}", IntSort(), RealSort())
+        acc_func = RecFunction(
+            _fresh_rec_name(f"_sketch_acc_{loop.func_name}_{red_loop_iv}"), IntSort(), RealSort()
+        )
         k = Int(f"{red_sketch_iv}_rf")
 
         local_iv = dict(sketch_iv_z3)
@@ -1557,6 +1598,7 @@ class Z3EquivalenceChecker:
         f = funcs.get(op_idx)
         if f is None:
             return RealVal(0)
+        _check_operand_rank(sketch, op_idx, map_str, indices, f)
         return _apply_func(f, indices) if indices else Real(str(f))
 
     # ------------------------------------------------------------------

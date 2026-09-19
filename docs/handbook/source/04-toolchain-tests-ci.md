@@ -86,7 +86,7 @@ Note that CI validates artifacts with whatever `mlir-opt` version Ubuntu provide
 ## Current state
 
 > [!CRIT] CI on main is failing
-> Every push to `main` since the restructure commit (run 34763839671, 2026-09-13) fails with `1 failed, 364 passed`. The failing test is `tests/integration/test_matmul.py::TestMatmulLiftPipeline::test_lift_larger_matmul`. Root cause: Z3 recursive-function names collide between candidate checks, so both candidates return ENCODE_ERROR and the lifter reports "All 2 candidates failed Z3 verification." instead of the emission error the test expects. Tracked as T2 (LOOPH-10). Until it is fixed, a red CI tells you nothing about your own change; run the test suite locally and compare against the 364/1 baseline.
+> From the restructure commit (run 34763839671, 2026-09-13) until LOOPH-10, every push to `main` failed with `1 failed, 364 passed` (`test_lift_larger_matmul`): Z3 recursive-function names collided between candidate checks (F-06). LOOPH-10 fixed it; the expected result is now 372 passed.
 
 Other observations: GitHub warns that `actions/checkout@v4` and `actions/setup-python@v5` target the deprecated Node 20 runtime; there is no lint, type check or coverage step; only one Python version is tested.
 
@@ -97,7 +97,7 @@ Other observations: GitHub warns that `actions/checkout@v4` and `actions/setup-p
 From `packages/loophole` with the virtual environment active:
 
 ```
-python -m pytest tests -q                         # everything (expect 364 passed, 1 failed today)
+python -m pytest tests -q                         # everything (expect 372 passed)
 python -m pytest tests/unit -q                    # unit tests only
 python -m pytest tests/integration/test_matmul.py -q
 python -m pytest tests -q -k "stablehlo"           # by keyword
@@ -147,7 +147,7 @@ Located at `packages/loophole/conftest.py` (package root, not inside `tests/`). 
 | `test_weekly_benchmark_report.py` | 3 | Report generation and writing | |
 | `test_demo_script_smoke.py` | 2 | `examples/run_demo.py` plain and demo modes with a fixture limit | |
 
-Total: 365 tests (unit 255, integration 110).
+Total: 372 tests (unit 262, integration 110).
 
 ## Fixture directories (`tests/fixtures/`)
 
@@ -270,7 +270,7 @@ python docs/handbook/build_handbook.py 05     # one part
 | `Input/output/include paths must be on the same drive` | Docker mounts one common parent; keep sources and outputs on one drive. |
 | `COPY requirements.txt ... not found` during build | Wrong build context; the last argument must be `packages/loophole`. |
 | Build killed with `c++: fatal error: Killed` | Out of memory: `--build-arg BUILD_THREADS=2` or more Docker memory. |
-| `All N candidates failed Z3 verification.` on a large kernel | Z3 recursive-function name collision (F-06, T2), not a real refutation. |
+| `None of the N checked candidates reached a Z3 verdict.` | Every checked candidate hit ENCODE_ERROR or STRUCTURAL_MISMATCH; the message lists each one's reason. It is not a refutation. |
 | Lift reports PROVED but the MLIR looks wrong | Likely a known soundness defect (F-01 to F-05). Check the kernel against Part 5 chapter 2 and validate with `mlir-opt`. |
 | `Validation failed ... Dialect 'stablehlo' not found` | Expected: the image has no StableHLO tools (F-09). |
 | `--profile trusted` passes on a machine without Docker | The internal fake verifier was used (F-10). Start Docker or install `mlir-opt`. |

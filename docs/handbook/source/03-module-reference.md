@@ -278,7 +278,6 @@ Decide whether a loop nest and a sketch compute the same output values, using Z3
 | Critical | Source term built from payload category, not dataflow | 777-845, 1170-1260 | F-01 |
 | Critical | Payload inference falls through to COPY | 1644-1668 | F-02 |
 | High | Pre-filter has no rule for SCALE/NEGATE/MAX/MIN | 293-342 | F-18 |
-| High | RecFunction names global per process; conv recursive arity bug | 1225, 1521 | F-06 |
 | High | Output initial value ignored; `-1e30` max start | 756-773, seven sites | F-07 |
 | Medium | Parametric pilot collapses equal extents, bounded by static shapes | 1676-1736 | F-14 |
 | Medium | Unparseable index becomes an unconstrained symbol instead of an error | 282-286 | F-21 |
@@ -296,7 +295,8 @@ Decide whether a loop nest and a sketch compute the same output values, using Z3
 - Do not change the encoding without the T1 mutant tests present; they are the only way to see soundness regressions.
 - T5's design: build Z3 terms by walking backwards from the stored SSA value through `compute_ops`, mapping loads to tensor applications, constants to `RealVal`, and each arith op to the corresponding Z3 operator in operand order; raise on anything unmodelled.
 - When adding a reduction strategy, write it once as a function of "how to read operand *i* at a point" and use it for both sides.
-- Name every `RecFunction` uniquely (for example with an `itertools.count()` suffix).
+- Z3 `RecFunction` names are process-global: name every new one with `_fresh_rec_name`.
+- Apply sketch operand functions only after `_check_operand_rank`; it turns a map/tensor rank mismatch into a named ENCODE_ERROR instead of a raw Z3 arity error.
 
 # `lifter.py` (orchestrator)
 
@@ -311,17 +311,17 @@ Run stages 1 to 4, choose a result, and define the result types and policy profi
 ## Internals
 
 - `_build_strided_conv_sketch` (49-131): for convolution sketches, rewrites the input indexing map with coefficients inferred from the source index expressions (`2*w + 3*kw`), returning a modified copy, or `None` when all coefficients are 1.
-- `lift` (363-512): parse (exceptions become "Parse error"), match, verify, optional parametric augmentation, then the decision chain described in Part 2 (refuted, strict rejection, emission, success).
-- `_match_candidates` (522-575): chooses the library by target (`both` uses all 35), runs the convolution recogniser and SymPy trace (trace failures give confidence 0), keeps structurally matching sketches, sorts by `(recogniser match, confidence)` descending, returns `2 * top_k`.
-- `_annotate_disagreement` (577-597): marks high-confidence unproved or refuted results.
-- `_verify_candidates` (603-652): see Part 2.
-- `_emit` (658-662): StableHLO emitter when the sketch's dialect is StableHLO or the target is StableHLO, else Linalg.
+- `lift` (380-529): parse (exceptions become "Parse error"), match, verify, optional parametric augmentation, then the decision chain described in Part 2 (refuted, strict rejection, emission, success).
+- `_match_candidates` (539-592): chooses the library by target (`both` uses all 35), runs the convolution recogniser and SymPy trace (trace failures give confidence 0), keeps structurally matching sketches, sorts by `(recogniser match, confidence)` descending, returns `2 * top_k`.
+- `_annotate_disagreement` (594-614): marks high-confidence unproved or refuted results.
+- `_verify_candidates` (620-675): see Part 2.
+- `_emit` (681-685): StableHLO emitter when the sketch's dialect is StableHLO or the target is StableHLO, else Linalg.
 
 ## Drawbacks
 
 | Severity | Issue | Finding |
 |---|---|---|
-| Medium | `result_state` maps no-verification to REFUTED; ENCODE_ERROR dropped | F-12 |
+| Medium | `result_state` maps no-verification to REFUTED; no-verdict reports hidden whenever another candidate has a result | F-12 |
 | Medium | First EQUIVALENT wins; recogniser overrides confidence; `2*top_k` returned but `top_k` verified | F-19 |
 | Medium | Emission error after a proof still yields state PROVED | F-12 |
 | Low | Imports private `_infer_linear_coeff` from `emitter.py` | F-23 |

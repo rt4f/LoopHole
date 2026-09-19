@@ -4,7 +4,14 @@ Unit tests for LiftResult trust semantics and strict-mode behavior.
 
 from types import SimpleNamespace
 
-from loophole.lifter import Lifter, LiftResult, LiftResultState, resolve_policy_profile
+from loophole.lifter import (
+    Lifter,
+    LiftResult,
+    LiftResultState,
+    _CandidateVerification,
+    resolve_policy_profile,
+)
+from loophole.tests.fixtures import MATMUL_MLIR
 from loophole.z3_checker import CheckResult, VerificationReport
 
 
@@ -85,7 +92,7 @@ def test_lifter_strict_mode_rejects_timeout_without_emission() -> None:
 
     lifter._extractor.extract = lambda _text: loop
     lifter._match_candidates = lambda _loop: [(sketch, 0.9)]
-    lifter._verify_candidates = lambda _loop, _candidates: (sketch, report, 0.9)
+    lifter._verify_candidates = lambda _loop, _candidates: _CandidateVerification(best=(sketch, report, 0.9))
     lifter._emit = lambda _sketch, _loop: (_ for _ in ()).throw(AssertionError("emit must not run"))
 
     result = lifter.lift("dummy")
@@ -118,7 +125,7 @@ def test_lifter_non_strict_timeout_allows_partial_emission() -> None:
 
     lifter._extractor.extract = lambda _text: loop
     lifter._match_candidates = lambda _loop: [(sketch, 0.9)]
-    lifter._verify_candidates = lambda _loop, _candidates: (sketch, report, 0.9)
+    lifter._verify_candidates = lambda _loop, _candidates: _CandidateVerification(best=(sketch, report, 0.9))
     lifter._emit = lambda _sketch, _loop: "module {}"
 
     result = lifter.lift("dummy")
@@ -157,3 +164,29 @@ def test_lifter_from_policy_profile_allows_explicit_overrides() -> None:
     )
     assert not lifter.strict_mode
     assert lifter.z3_timeout_ms == 7_000
+
+
+def test_lift_reports_candidates_that_could_not_be_encoded() -> None:
+    lifter = Lifter(target="linalg")
+    checked = []
+
+    def _encode_failure(_loop, sketch):
+        checked.append(sketch.name)
+        return VerificationReport(
+            result=CheckResult.ENCODE_ERROR,
+            sketch_name=sketch.name,
+            elapsed_ms=1.0,
+            notes=f"Encoding error: stub failure for {sketch.name}",
+        )
+
+    lifter._z3.check = _encode_failure
+
+    result = lifter.lift(MATMUL_MLIR)
+
+    assert checked, "the lifter should have checked at least one candidate"
+    assert result.verification is None
+    assert result.emitted_mlir is None
+    assert "failed Z3 verification" not in result.error
+    assert f"{len(checked)} checked candidates" in result.error
+    for name in checked:
+        assert f"{name}: ENCODE_ERROR: Encoding error: stub failure for {name}" in result.error

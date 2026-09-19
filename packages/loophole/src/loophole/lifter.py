@@ -287,6 +287,23 @@ class LiftResult:
         )
 
 
+@dataclass
+class _CandidateVerification:
+    """Outcome of running Z3 over the ranked candidates.
+
+    ``best`` is the candidate to report (proved, else timed out, else refuted).
+    ``no_verdict`` holds the reports of checked candidates that never reached a
+    verdict, such as encoding failures, so they can be reported instead of lost.
+    """
+    best: Optional[Tuple[OperationSketch, VerificationReport, float]]
+    no_verdict: List[VerificationReport] = field(default_factory=list)
+
+
+def _no_verdict_error(reports: List[VerificationReport]) -> str:
+    details = "; ".join(f"{r.sketch_name}: {r.result.value}: {r.notes}" for r in reports)
+    return f"None of the {len(reports)} checked candidates reached a Z3 verdict. {details}"
+
+
 # ---------------------------------------------------------------------------
 # Main Lifter
 # ---------------------------------------------------------------------------
@@ -412,11 +429,11 @@ class Lifter:
             )
 
         # Stage 3: verify top-k with Z3
-        best_result = self._verify_candidates(loop, candidates)
+        verification = self._verify_candidates(loop, candidates)
 
         total_ms = (time.perf_counter() - t0) * 1000
 
-        if best_result is None:
+        if verification.best is None:
             return LiftResult(
                 func_name=loop.func_name,
                 matched_sketch=None,
@@ -428,11 +445,11 @@ class Lifter:
                 target_dialect=self.target,
                 loop_info=loop,
                 candidates_tried=[c[0].name for c in candidates],
-                error=f"All {len(candidates)} candidates failed Z3 verification.",
+                error=_no_verdict_error(verification.no_verdict),
                 parser_diagnostics=loop.diagnostics,
             )
 
-        sketch, report, sympy_conf = best_result
+        sketch, report, sympy_conf = verification.best
 
         # A-15: shape-parametric proof augmentation (non-blocking — never changes concrete result)
         if self.parametric_mode and report.result == CheckResult.EQUIVALENT:
@@ -604,15 +621,17 @@ class Lifter:
         self,
         loop: LoopNestInfo,
         candidates: List[Tuple[OperationSketch, float]],
-    ) -> Optional[Tuple[OperationSketch, VerificationReport, float]]:
+    ) -> _CandidateVerification:
         """
         Run Z3 verification on each candidate in order.
-        Returns (sketch, report, confidence) for the first EQUIVALENT match.
-        If none prove EQUIVALENT, returns the best TIMEOUT/UNKNOWN fallback.
-        If no timeout fallback exists, returns a refuted candidate explicitly.
+        ``best`` is (sketch, report, confidence) for the first EQUIVALENT match.
+        If none prove EQUIVALENT, it is the best TIMEOUT/UNKNOWN fallback.
+        If no timeout fallback exists, it is a refuted candidate explicitly.
+        Candidates with no verdict (e.g. ENCODE_ERROR) are kept in ``no_verdict``.
         """
         best_timeout: Optional[Tuple[OperationSketch, VerificationReport, float]] = None
         best_refuted: Optional[Tuple[OperationSketch, VerificationReport, float]] = None
+        no_verdict: List[VerificationReport] = []
 
         for sketch, conf in candidates[: self.top_k]:
             if self.verbose:
@@ -625,7 +644,7 @@ class Lifter:
                 print(f"     -> {report.result.value} in {report.elapsed_ms:.1f}ms")
 
             if report.result == CheckResult.EQUIVALENT:
-                return (sketch, report, conf)
+                return _CandidateVerification(best=(sketch, report, conf), no_verdict=no_verdict)
 
             if report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
                 if best_timeout is None:
@@ -640,16 +659,20 @@ class Lifter:
                     if self.verbose:
                         print(f"     -> {strided_report.result.value} in {strided_report.elapsed_ms:.1f}ms")
                     if strided_report.result == CheckResult.EQUIVALENT:
-                        return (sketch, strided_report, conf)
+                        return _CandidateVerification(
+                            best=(sketch, strided_report, conf), no_verdict=no_verdict
+                        )
                     if strided_report.result in (CheckResult.TIMEOUT, CheckResult.UNKNOWN):
                         if best_timeout is None:
                             best_timeout = (sketch, strided_report, conf)
                 if best_refuted is None:
                     best_refuted = (sketch, report, conf)
+            else:
+                no_verdict.append(report)
 
         # No formal proof — return best timeout candidate (partial success),
         # otherwise return explicit refutation so callers can report it.
-        return best_timeout or best_refuted
+        return _CandidateVerification(best=best_timeout or best_refuted, no_verdict=no_verdict)
 
     # ------------------------------------------------------------------
     # Stage 4: Emit
