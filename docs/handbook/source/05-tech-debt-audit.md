@@ -57,6 +57,7 @@ c += 2*A[k]*B[k]                          linalg -> PROVED linalg.dot           
 ## F-02: Payload inference has no multiply-only or max-only branch
 
 - **Severity:** Critical. **Category:** code. **Tracked:** part of T5 ("anything unrecognised falls through to COPY"); the specific canonical-fixture failure is new.
+- **Status:** mitigated by LOOPH-20 (N1). `_infer_compute_payload` matches exact op-kind sets and raises on anything unmodelled; elementwise payloads need exactly the reads they model; RELU needs a max against a constant 0.0 from a clean parse. `ELEMENTWISE_MUL_MLIR` now lifts to `linalg.map{arith.mulf}` / `stablehlo.multiply` and `RELU_MLIR` to `linalg.map{arith.maxf_zero}`. A sweep of every sketch over every fixture changed no other fixture's verdict, and seven mutant fixtures (div, negate, scale by constant, add constant, three inputs, mul-add, hex constant) have no EQUIVALENT verdict from any sketch. Still proved wrongly, pending T5: `C = B - A` as `A - B`; `C = A*B + A` (one load of A, used twice) as elementwise mul; and `C += 2*A*B` as plain matmul. The payload model sees which op kinds occur, not how often or on which values.
 - **Where:** `z3_checker.py` `_infer_compute_payload` (1644-1668). `{mulf}` alone, `{divf}`, `{negf}` fall through to `COPY`; `{maxf}` with one read returns the read unchanged in `_build_elementwise_expr`.
 - **Reproduction:** the unmodified fixture `ELEMENTWISE_MUL_MLIR` is lifted as `linalg.map{arith.mulf_scalar}`. The correct sketch `linalg.map{arith.mulf}` is tried first and REFUTED (source modelled as `C == A`), then the scale sketch (also `C == A`) is "proved". The unmodified `RELU_MLIR` is lifted as `linalg.copy` (max with zero dropped). Both are marked PROVED; `tests/integration` has no assertion on which sketch these fixtures map to for Linalg.
 - **Quick mitigation:** add explicit `MULTIPLY`, `MAX`, `NEGATE` branches and make unknown sets raise (so the result is ENCODE_ERROR). This is a one-hour change that stops the canonical-fixture false proofs even before the full T5 rewrite.
@@ -158,6 +159,7 @@ conv1d          -> error: 'linalg.conv_1d_ncw_fcw' op expected operand rank (2) 
 ## F-18: Structural pre-filter has no rule for SCALE, NEGATE, MAX, MIN
 
 - **Severity:** High. **Category:** code. **Tracked:** New (closely related to T5 and T8).
+- **Status:** fixed by LOOPH-20 (N1). SCALE requires a multiply with exactly one loaded operand; NEGATE, MAX and MIN require their op. No library sketch uses NEGATE, MAX or MIN yet. The scale sketch's own semantics still ignore `%alpha` (T8).
 - **Where:** `structural_match` (`z3_checker.py` 293-342) has no branch for these payloads, so any loop with the right loop counts passes. That is why the scale sketch becomes a candidate for `elementwise_mul`, `relu` and `A + 1.0`. Combined with F-02 it turns into false proofs.
 
 ## F-19: Candidate ranking lets the convolution recogniser override confidence

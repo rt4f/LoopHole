@@ -143,21 +143,21 @@ Order matters: `SKETCH_LIBRARY` is iterated in this order, and ties in candidate
 | 12 | linalg.reduce{arith.addf}_rowsum | linalg | i,j (1/1) | (i, j); (i) | accumulate_add | FAIL syntax |
 | 13 | linalg.reduce{arith.addf}_colsum | linalg | i,j (1/1) | (i, j); (j) | accumulate_add | FAIL syntax |
 | 14 | linalg.reduce{arith.maxf} | linalg | i,j (1/1) | (i, j); (i) | accumulate_max | FAIL syntax |
-| 15 | linalg.map{arith.maxf_zero} | linalg | i,j (2/0) | (i, j); (i, j) | relu | not reached (relu lifts to copy) |
+| 15 | linalg.map{arith.maxf_zero} | linalg | i,j (2/0) | (i, j); (i, j) | relu | reached by `relu` since LOOPH-20; not yet validated (expected FAIL syntax, F-08) |
 | 16 | linalg.map{arith.addf} | linalg | i,j (2/0) | (i, j) x3 | add | FAIL syntax |
-| 17 | linalg.map{arith.mulf} | linalg | i,j (2/0) | (i, j) x3 | multiply | not reached (refuted, F-02) |
+| 17 | linalg.map{arith.mulf} | linalg | i,j (2/0) | (i, j) x3 | multiply | reached by `elementwise_mul` since LOOPH-20; not yet validated (expected FAIL syntax, F-08) |
 | 18 | linalg.map{arith.subf} | linalg | i,j (2/0) | (i, j) x3 | subtract | FAIL syntax |
 | 19 | linalg.map{arith.addf}_1d | linalg | i (1/0) | (i) x3 | add | not reached |
-| 20 | linalg.map{arith.mulf_scalar} | linalg | i,j (2/0) | (i, j); (i, j) | scale | FAIL syntax (and wrong op) |
+| 20 | linalg.map{arith.mulf_scalar} | linalg | i,j (2/0) | (i, j); (i, j) | scale | FAIL syntax; no fixture reaches it since LOOPH-20 |
 | 21 | linalg.transpose | linalg | i,j (2/0) | (i, j); (j, i) | copy | OK |
-| 22 | linalg.copy | linalg | i,j (2/0) | (i, j); (i, j) | copy | OK (reached wrongly by relu) |
+| 22 | linalg.copy | linalg | i,j (2/0) | (i, j); (i, j) | copy | OK |
 | 23 | stablehlo.dot_general | stablehlo | m,n,k (2/1) | as matmul | multiply_accumulate | cannot validate |
 | 24 | stablehlo.dot_general_matvec | stablehlo | m,k (1/1) | as matvec | multiply_accumulate | cannot validate |
 | 25 | stablehlo.dot_general_vecdot | stablehlo | k (0/1) | as dot | multiply_accumulate | cannot validate |
 | 26 | stablehlo.transpose | stablehlo | i,j (2/0) | (i, j); (j, i) | copy | cannot validate |
 | 27 | stablehlo.add | stablehlo | i,j (2/0) | (i, j) x3 | add | cannot validate |
 | 28 | stablehlo.subtract | stablehlo | i,j (2/0) | (i, j) x3 | subtract | cannot validate |
-| 29 | stablehlo.multiply | stablehlo | i,j (2/0) | (i, j) x3 | multiply | not reached (refuted, F-02) |
+| 29 | stablehlo.multiply | stablehlo | i,j (2/0) | (i, j) x3 | multiply | cannot validate |
 | 30 | stablehlo.reduce{add} | stablehlo | i,j (1/1) | (i, j); (i) | accumulate_add | cannot validate |
 | 31 | stablehlo.reduce{add}_colsum | stablehlo | i,j (1/1) | (i, j); (j) | accumulate_add | cannot validate |
 | 32 | stablehlo.reduce{max} | stablehlo | i,j (1/1) | (i, j); (i) | accumulate_max | cannot validate |
@@ -247,7 +247,7 @@ Decide whether a loop nest and a sketch compute the same output values, using Z3
 
 **Helpers (104-287).** `_make_tensor_func` (uninterpreted `Int^rank -> Real`), `_z3_int`, `_sanitize_symbol_name`, `_tokenize_affine_expr` and `_AffineExprParser` (recursive descent for `+ - * ( )` over integers and names), `_eval_affine_expr`, `_eval_index_expr` (falls back to a fresh integer symbol named after the whole expression if parsing fails, which silently makes unknown indices unconstrained).
 
-**`structural_match` (293-342).** Requires equal loop count and reduction count and at least one write; checks op-type presence for multiply_accumulate, copy (no mul/add), add, subtract, multiply, accumulate_add, accumulate_max and relu. SCALE, NEGATE, MAX and MIN always pass (F-18).
+**`structural_match` (396-459).** Requires equal loop count and reduction count and at least one write; checks op-type presence for multiply_accumulate, copy (no mul/add), add, subtract, multiply, accumulate_add, accumulate_max, relu, negate, max and min. Scale needs a multiply with exactly one loaded operand (`_multiplies_one_loaded_value`).
 
 **`check` (467-499).** Pre-filter, `_verify`, catches any exception as ENCODE_ERROR with the message in notes, records elapsed time.
 
@@ -259,14 +259,14 @@ Decide whether a loop nest and a sketch compute the same output values, using Z3
 
 **Reduction classification and bounds.** `_classify_reduction_pattern` (895-935), `_symbolic_reduction_upper_bound_multi` (937-995), `_symbolic_reduction_upper_bound` (997-1021), `_build_symbolic_shape_assumptions` (657-708), `_parse_simple_iv_offset` (616-655), `_bound_expr` (372-396), `_bound_as_int` (398-405).
 
-**Payload inference.** `_infer_compute_payload` (1644-1668), see F-02.
+**Payload inference.** `_infer_compute_payload` (1779-1794) looks up the exact op-kind set in `_PAYLOAD_BY_OP_KINDS`; `_is_max_with_zero` (374-389) separates RELU from MAX and refuses a zero that came from an unparseable literal. Anything unmodelled raises `_UnmodelledComputePayload` (ENCODE_ERROR).
 
 **Parametric pilot.** `_collect_shape_dims` (1676-1693), `_verify_parametric` (1695-1736).
 
 ## Assumptions
 
 - Tensors are total functions; out-of-bounds reads are not modelled.
-- Source semantics are fully captured by (payload label, first two reads, index expressions).
+- Source semantics are fully captured by (payload label, the one or two non-output reads, index expressions). Any other read count is ENCODE_ERROR.
 - Values are mathematical reals.
 - Parallel IVs of source and sketch correspond in order.
 - Every loop visits every integer in `[lo, hi)`.
@@ -275,9 +275,7 @@ Decide whether a loop nest and a sketch compute the same output values, using Z3
 
 | Severity | Issue | Where | Finding |
 |---|---|---|---|
-| Critical | Source term built from payload category, not dataflow | 777-845, 1170-1260 | F-01 |
-| Critical | Payload inference falls through to COPY | 1644-1668 | F-02 |
-| High | Pre-filter has no rule for SCALE/NEGATE/MAX/MIN | 293-342 | F-18 |
+| Critical | Source term built from payload category, not dataflow | 841-976, 1332-1391 | F-01 |
 | High | Output initial value ignored; `-1e30` max start | 756-773, seven sites | F-07 |
 | Medium | Parametric pilot collapses equal extents, bounded by static shapes | 1676-1736 | F-14 |
 | Medium | Unparseable index becomes an unconstrained symbol instead of an error | 282-286 | F-21 |

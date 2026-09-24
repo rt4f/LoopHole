@@ -86,6 +86,20 @@ class _SketchOperandRankMismatch(Exception):
     than the rank of the tensor bound to that operand."""
 
 
+class _UnmodelledComputePayload(Exception):
+    """Internal: the loop body's arithmetic has no exact payload model, so any
+    proof would be about a different computation."""
+
+
+def _unmodelled_payload(loop: LoopNestInfo, reason: str, hint: str) -> _UnmodelledComputePayload:
+    ops = sorted({op.op_type for op in loop.compute_ops if op.op_type != 'constant'})
+    inputs = len([r for r in loop.reads if r.tensor_name != loop.output_tensor])
+    return _UnmodelledComputePayload(
+        f"unsupported_form=unmodelled_compute_payload | reason={reason} | ops={ops} | "
+        f"inputs={inputs} | reduction={bool(loop.reduction_vars)} | hint={hint}"
+    )
+
+
 @dataclass
 class VerificationReport:
     result: CheckResult
@@ -325,6 +339,57 @@ def _eval_index_expr(expr: str, iv_vars: Dict[str, ArithRef]) -> ArithRef:
 
 
 # ---------------------------------------------------------------------------
+# Compute payload classification
+# ---------------------------------------------------------------------------
+
+# Arithmetic op types grouped by the operation they perform. Anything outside
+# this vocabulary has no payload model.
+_OP_KINDS: Dict[str, str] = {
+    'mulf': 'mul', 'muli': 'mul', 'mulsi': 'mul',
+    'addf': 'add', 'addi': 'add',
+    'subf': 'sub', 'subi': 'sub',
+    'maxf': 'max', 'maxnumf': 'max', 'maxsi': 'max',
+    'minf': 'min', 'minnumf': 'min', 'minsi': 'min',
+    'negf': 'neg',
+}
+
+# The exact op-kind sets each payload models, keyed by (kinds, has reduction).
+# A set that is not listed has no model and must not be approximated by one.
+_PAYLOAD_BY_OP_KINDS: Dict[Tuple[frozenset, bool], ComputePayloadType] = {
+    (frozenset(), False): ComputePayloadType.COPY,
+    (frozenset(), True): ComputePayloadType.COPY,
+    (frozenset({'mul', 'add'}), True): ComputePayloadType.MULTIPLY_ACCUMULATE,
+    (frozenset({'mul', 'add'}), False): ComputePayloadType.MULTIPLY,
+    (frozenset({'add'}), True): ComputePayloadType.ACCUMULATE_ADD,
+    (frozenset({'add'}), False): ComputePayloadType.ADD,
+    (frozenset({'sub'}), True): ComputePayloadType.SUBTRACT,
+    (frozenset({'sub'}), False): ComputePayloadType.SUBTRACT,
+    (frozenset({'max'}), True): ComputePayloadType.ACCUMULATE_MAX,
+    (frozenset({'max'}), False): ComputePayloadType.MAX,
+    (frozenset({'mul'}), False): ComputePayloadType.MULTIPLY,
+    (frozenset({'neg'}), False): ComputePayloadType.NEGATE,
+}
+
+
+def _is_max_with_zero(loop: LoopNestInfo) -> bool:
+    """True if the loop's single max op compares against a constant 0.0."""
+    max_ops = [op for op in loop.compute_ops if _OP_KINDS.get(op.op_type) == 'max']
+    constants = {op.result: op for op in loop.compute_ops if op.op_type == 'constant'}
+    if len(max_ops) != 1:
+        return False
+    constant_operands = [constants[o] for o in max_ops[0].operands if o in constants]
+    if len(constant_operands) != 1:
+        return False
+    # The parser records an unreadable literal (e.g. a hex float) as 0.0 with a
+    # warning, so a 0.0 here cannot be trusted if any such warning was raised.
+    if any(d.location == '_collect_compute_ops' for d in loop.diagnostics if d.level == 'warning'):
+        raise _unmodelled_payload(
+            loop, 'unparsed_constant', 'a constant literal in the loop body could not be parsed'
+        )
+    return constant_operands[0].value == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Structural pre-filter
 # ---------------------------------------------------------------------------
 
@@ -351,6 +416,8 @@ def structural_match(loop: LoopNestInfo, sketch: OperationSketch) -> bool:
     has_add = any(op.op_type in ('addf', 'addi') for op in loop.compute_ops)
     has_max = any(op.op_type in ('maxf', 'maxnumf', 'maxsi') for op in loop.compute_ops)
     has_sub = any(op.op_type in ('subf', 'subi') for op in loop.compute_ops)
+    has_min = any(op.op_type in ('minf', 'minnumf', 'minsi') for op in loop.compute_ops)
+    has_neg = any(op.op_type == 'negf' for op in loop.compute_ops)
 
     if cp == ComputePayloadType.MULTIPLY_ACCUMULATE:
         if not (has_mul and (has_add or loop.has_accumulation)):
@@ -376,8 +443,30 @@ def structural_match(loop: LoopNestInfo, sketch: OperationSketch) -> bool:
     elif cp == ComputePayloadType.RELU:
         if not has_max:
             return False
+    elif cp == ComputePayloadType.SCALE:
+        if not _multiplies_one_loaded_value(loop):
+            return False
+    elif cp == ComputePayloadType.NEGATE:
+        if not has_neg:
+            return False
+    elif cp == ComputePayloadType.MAX:
+        if not has_max:
+            return False
+    elif cp == ComputePayloadType.MIN:
+        if not has_min:
+            return False
 
     return True
+
+
+def _multiplies_one_loaded_value(loop: LoopNestInfo) -> bool:
+    """True if some multiply has exactly one loaded operand (the other being a
+    constant or scalar argument), as in ``C = alpha * A``."""
+    loaded = {r.ssa_name for r in loop.reads}
+    return any(
+        op.op_type in ('mulf', 'muli', 'mulsi') and sum(o in loaded for o in op.operands) == 1
+        for op in loop.compute_ops
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -867,8 +956,12 @@ class Z3EquivalenceChecker:
                 return -a_val
             elif cp == ComputePayloadType.RELU:
                 return If(a_val >= RealVal(0), a_val, RealVal(0))
-            return a_val
+            raise _unmodelled_payload(loop, 'input_count', f'{cp.value} is not modelled with one input')
 
+        if len(reads_no_output) != 2:
+            raise _unmodelled_payload(
+                loop, 'input_count', f'{cp.value} is modelled with exactly two inputs'
+            )
         b_val = read_val(reads_no_output[1])
         if cp == ComputePayloadType.ADD:
             return a_val + b_val
@@ -880,7 +973,7 @@ class Z3EquivalenceChecker:
             return If(a_val >= b_val, a_val, b_val)
         elif cp == ComputePayloadType.MIN:
             return If(a_val <= b_val, a_val, b_val)
-        return a_val
+        raise _unmodelled_payload(loop, 'input_count', f'{cp.value} is not modelled with two inputs')
 
     def _build_reduction_expr(
         self,
@@ -1684,30 +1777,21 @@ class Z3EquivalenceChecker:
         return [_eval_index_expr(p, iv_z3) for p in parts if p]
 
     def _infer_compute_payload(self, loop: LoopNestInfo) -> ComputePayloadType:
-        """Infer compute payload from loop arithmetic operations."""
-        ops = {op.op_type for op in loop.compute_ops}
-        has_mul = bool(ops & {'mulf', 'muli', 'mulsi'})
-        has_add = bool(ops & {'addf', 'addi'})
-        has_sub = bool(ops & {'subf', 'subi'})
-        has_max = bool(ops & {'maxf', 'maxnumf', 'maxsi'})
+        """Classify the loop's arithmetic; raise if no payload models it exactly."""
+        op_types = [op.op_type for op in loop.compute_ops if op.op_type != 'constant']
+        unknown = sorted({t for t in op_types if t not in _OP_KINDS})
+        if unknown:
+            raise _unmodelled_payload(loop, 'unknown_op', f'no payload models {unknown}')
 
-        if has_mul and has_add:
-            if loop.reduction_vars:
-                return ComputePayloadType.MULTIPLY_ACCUMULATE
-            return ComputePayloadType.MULTIPLY
-        if has_add:
-            if loop.reduction_vars:
-                return ComputePayloadType.ACCUMULATE_ADD
-            return ComputePayloadType.ADD
-        if has_sub:
-            return ComputePayloadType.SUBTRACT
-        if has_max:
-            if loop.reduction_vars:
-                return ComputePayloadType.ACCUMULATE_MAX
-            return ComputePayloadType.MAX
-        if not loop.compute_ops:
-            return ComputePayloadType.COPY
-        return ComputePayloadType.COPY
+        kinds = frozenset(_OP_KINDS[t] for t in op_types)
+        payload = _PAYLOAD_BY_OP_KINDS.get((kinds, bool(loop.reduction_vars)))
+        if payload is None:
+            raise _unmodelled_payload(
+                loop, 'unsupported_op_combination', f'no payload models the op kinds {sorted(kinds)}'
+            )
+        if payload == ComputePayloadType.MAX and _is_max_with_zero(loop):
+            return ComputePayloadType.RELU
+        return payload
 
     # ------------------------------------------------------------------
     # A-15: Shape-parametric proof pilot

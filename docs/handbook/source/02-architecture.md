@@ -296,7 +296,7 @@ Differences from the fixture: numbered SSA names, the accumulator is a loop bloc
 5. Any other result (`ENCODE_ERROR`, `STRUCTURAL_MISMATCH`) is kept in `no_verdict`.
 6. After the loop, `best` is the timeout fallback if any, otherwise the refuted candidate, otherwise `None`. When it is `None`, `lift` sets `error` to "None of the N checked candidates reached a Z3 verdict." followed by each candidate's sketch, result and notes. When `best` is set, the `no_verdict` reports are not shown anywhere.
 
-Because the first `EQUIVALENT` wins, **a wrong sketch that proves beats a right sketch that is refuted**. Combined with an unsound encoding, this ordering is how the `elementwise_mul` fixture ends up as a scale operation (Part 5, F-02).
+Because the first `EQUIVALENT` wins, **a wrong sketch that proves beats a right sketch that is refuted**. Combined with an unsound encoding, this ordering is how the `elementwise_mul` fixture was proved as a scale operation until LOOPH-20 (Part 5, F-02).
 
 ## Acceptance and exit codes
 
@@ -360,7 +360,7 @@ There is no single configuration object. Profile, flags and variables are resolv
 
 This is the heart of the soundness issue and worth understanding precisely.
 
-- **Source side.** `_build_rhs_expr` calls `_infer_compute_payload(loop)`, which looks only at the set of `op_type` strings: multiply and add with reductions gives `MULTIPLY_ACCUMULATE`, multiply and add without gives `MULTIPLY`, add gives `ACCUMULATE_ADD`/`ADD`, subtract gives `SUBTRACT`, max gives `ACCUMULATE_MAX`/`MAX`, everything else `COPY`. The expression is then that payload applied to the first one or two reads that are not the output tensor, in textual order. Constants, the order of operands inside `subf`, additional reads, `divf`, `negf` and the actual SSA dataflow are never consulted.
+- **Source side.** `_build_rhs_expr` calls `_infer_compute_payload(loop)`, which looks up the exact set of arithmetic op kinds (constants ignored) in `_PAYLOAD_BY_OP_KINDS`: multiply and add gives `MULTIPLY_ACCUMULATE` with a reduction and `MULTIPLY` without, add gives `ACCUMULATE_ADD`/`ADD`, subtract `SUBTRACT`, max `ACCUMULATE_MAX` with a reduction and otherwise `RELU` when the single max compares against a constant 0.0 (else `MAX`), multiply alone `MULTIPLY`, negate `NEGATE`, and no ops `COPY`. An op outside the vocabulary (e.g. `divf`) or an unlisted combination raises, giving ENCODE_ERROR (`unsupported_form=unmodelled_compute_payload`). The payload is applied to the reads that are not the output tensor, in textual order: `COPY`, `NEGATE` and `RELU` need exactly one, binary payloads exactly two, otherwise ENCODE_ERROR. Constant values other than ReLU's zero, the order of operands inside `subf`, how many times an op kind occurs, and the actual SSA dataflow are still never consulted.
 - **Sketch side.** `_build_sketch_rhs` applies the sketch's declared payload to the operands selected by its indexing maps. Operand *i* of the sketch is bound to the *i*-th unique non-output read tensor of the source.
 
 So both sides are "payload applied to reads at indices"; they differ only in which indices and which payload label. The proof really establishes "the index pattern of the source matches the sketch, assuming the source computes what its op-type set suggests".

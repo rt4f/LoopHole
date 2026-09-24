@@ -42,7 +42,7 @@ What genuinely works today:
 - A C or C++ kernel can be compiled to MLIR with Polygeist running inside a reproducible Docker image (`loophole compile`), and that MLIR can be fed to the lifter (`loophole lift`). The one-step `loophole lift-c` combines both.
 - For the canonical, correctly written kernels in the fixture set (4x4 matrix multiply, transpose, conv2d, matvec, dot product, elementwise add, row sums and so on) the lifter picks the intended target operation.
 - The emitted Linalg MLIR for matmul, transpose, matvec and the conv2d family is accepted by the real `mlir-opt` 17 parser and verifier.
-- There is a large test suite (372 tests), batch processing with JSON reports, policy profiles, a counterexample replay tool, and a published Docker image.
+- There is a large test suite (392 tests), batch processing with JSON reports, policy profiles, a counterexample replay tool, and a published Docker image.
 
 What does not work, verified in September 2026:
 
@@ -313,7 +313,7 @@ The table rates every major pre-existing document. "Current" means consistent wi
 
 1. Read Part 1 (this document) and skim Part 2 chapters 1 to 4.
 2. Build or pull the Docker image and create the virtual environment exactly as in `SETUP.md` sections 2 and 3. On Windows set `PYTHONUTF8=1`.
-3. Run the tests from `packages/loophole`: `python -m pytest tests -q`. Expect **372 passed**. Anything else means your environment differs.
+3. Run the tests from `packages/loophole`: `python -m pytest tests -q`. Expect **392 passed**. Anything else means your environment differs.
 4. Run `loophole demo --target linalg` and `loophole lift tests/fixtures/matmul.mlir --target linalg --report`. Compare the output with the worked example in Part 2 chapter 4.
 5. Run `loophole compile examples/smoke_matmul.c -o out/smoke.mlir` and open the generated MLIR to see real Polygeist output (numbered SSA names, `iter_args`).
 6. Reproduce one soundness bug yourself using Part 5 chapter 2 (for example F-01, `C = B - A`). It takes two minutes and permanently changes how you read "PROVED".
