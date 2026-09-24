@@ -514,6 +514,114 @@ func.func @relu(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
 """
 
 # ---------------------------------------------------------------------------
+# Elementwise kernels that no library sketch computes. The checker must never
+# report them PROVED: each one used to be modelled as a different, simpler op.
+# ---------------------------------------------------------------------------
+
+ELEMENTWISE_DIV_MLIR = """\
+func.func @elementwise_div(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i, %j] : memref<4x4xf32>
+      %res = arith.divf %a, %b : f32
+      affine.store %res, %C[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+NEGATE_MLIR = """\
+func.func @negate(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %res = arith.negf %a : f32
+      affine.store %res, %B[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+SCALE_BY_CONSTANT_MLIR = """\
+func.func @scale_by_constant(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %two = arith.constant 2.0 : f32
+      %res = arith.mulf %a, %two : f32
+      affine.store %res, %B[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+ADD_CONSTANT_MLIR = """\
+func.func @add_constant(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %one = arith.constant 1.0 : f32
+      %res = arith.addf %a, %one : f32
+      affine.store %res, %B[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+ELEMENTWISE_ADD3_MLIR = """\
+func.func @elementwise_add3(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %D: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i, %j] : memref<4x4xf32>
+      %d = affine.load %D[%i, %j] : memref<4x4xf32>
+      %ab = arith.addf %a, %b : f32
+      %res = arith.addf %ab, %d : f32
+      affine.store %res, %C[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+ELEMENTWISE_MUL_ADD_MLIR = """\
+func.func @elementwise_mul_add(%A: memref<4x4xf32>, %B: memref<4x4xf32>, %D: memref<4x4xf32>, %C: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %b = affine.load %B[%i, %j] : memref<4x4xf32>
+      %d = affine.load %D[%i, %j] : memref<4x4xf32>
+      %ab = arith.mulf %a, %b : f32
+      %res = arith.addf %ab, %d : f32
+      affine.store %res, %C[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+# 0x40A00000 is 5.0 as an f32 bit pattern: valid MLIR, but the parser cannot read
+# hex float literals and records the constant as 0.0 with a warning.
+MAX_HEX_CONSTANT_MLIR = """\
+func.func @max_hex_constant(%A: memref<4x4xf32>, %B: memref<4x4xf32>) {
+  affine.for %i = 0 to 4 {
+    affine.for %j = 0 to 4 {
+      %a = affine.load %A[%i, %j] : memref<4x4xf32>
+      %five = arith.constant 0x40A00000 : f32
+      %res = arith.maxf %a, %five : f32
+      affine.store %res, %B[%i, %j] : memref<4x4xf32>
+    }
+  }
+  return
+}
+"""
+
+# ---------------------------------------------------------------------------
 # Index expression variation fixtures for normalization (B-04)
 # ---------------------------------------------------------------------------
 

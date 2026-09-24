@@ -86,7 +86,7 @@ Note that CI validates artifacts with whatever `mlir-opt` version Ubuntu provide
 ## Current state
 
 > [!CRIT] CI on main is failing
-> From the restructure commit (run 34763839671, 2026-09-13) until LOOPH-10, every push to `main` failed with `1 failed, 364 passed` (`test_lift_larger_matmul`): Z3 recursive-function names collided between candidate checks (F-06). LOOPH-10 fixed it; the expected result is now 372 passed.
+> From the restructure commit (run 34763839671, 2026-09-13) until LOOPH-10, every push to `main` failed with `1 failed, 364 passed` (`test_lift_larger_matmul`): Z3 recursive-function names collided between candidate checks (F-06). LOOPH-10 fixed it.
 
 Other observations: GitHub warns that `actions/checkout@v4` and `actions/setup-python@v5` target the deprecated Node 20 runtime; there is no lint, type check or coverage step; only one Python version is tested.
 
@@ -97,7 +97,7 @@ Other observations: GitHub warns that `actions/checkout@v4` and `actions/setup-p
 From `packages/loophole` with the virtual environment active:
 
 ```
-python -m pytest tests -q                         # everything (expect 372 passed)
+python -m pytest tests -q                         # everything (expect 392 passed)
 python -m pytest tests/unit -q                    # unit tests only
 python -m pytest tests/integration/test_matmul.py -q
 python -m pytest tests -q -k "stablehlo"           # by keyword
@@ -110,7 +110,7 @@ Tests that validate emitted artifacts use the `mlir_verifier_cmd` fixture: they 
 
 Located at `packages/loophole/conftest.py` (package root, not inside `tests/`). Provides session-scoped `affine_extractor`, `z3_checker` (15 s timeout), `linalg_emitter`, `stablehlo_emitter`, `lifter_linalg` and `lifter_stablehlo` (from the resolved profile), `policy_profile_name`; function-scoped MLIR text fixtures for eight kernels; session-scoped parsed `LoopNestInfo` fixtures for five kernels; and `mlir_verifier_cmd`. A helper `load_mlir_fixture(name)` reads files from `tests/fixtures/`.
 
-## Unit tests (`tests/unit/`, 16 files)
+## Unit tests (`tests/unit/`, 15 files)
 
 | File | Tests | What it covers | Quality notes |
 |---|---|---|---|
@@ -121,25 +121,26 @@ Located at `packages/loophole/conftest.py` (package root, not inside `tests/`). 
 | `test_sketch_library.py` | 22 | Library integrity and presence of key sketches | Structural only |
 | `test_a13_multi_reduction_boundary.py` | 16 | Reduction pattern classification, ENCODE_ERROR notes for uninferable forms, `check` never raises | Tests private classification |
 | `test_a16_proof_quality_summary.py` | 15 | Grade thresholds, confidence distribution, per-sketch breakdown, Markdown rendering | Tests script internals via `sys.path` import |
-| `test_z3_checker.py` | 13 | Structural match, basic equivalence and non-equivalence, report fields, expression parsing, symbolic dot | Only one negative proof test (matmul vs elementwise) |
+| `test_z3_checker.py` | 29 | Structural match (incl. scale/negate/max/min rules), basic equivalence and non-equivalence, report fields, expression parsing, symbolic dot, RecFunction isolation, sketch/tensor rank mismatch, unmodelled op combinations | Few negative proofs here; mutant kernels live in `test_elementwise_lift.py` |
 | `test_parser_diagnostics.py` | 11 | Each diagnostic producer | Good |
-| `test_lifter_semantics.py` | 9 | State mapping, partial success, strict acceptance, profile resolution | Good contract tests |
+| `test_lifter_semantics.py` | 10 | State mapping, partial success, strict acceptance, profile resolution, no-verdict error message | Good contract tests |
 | `test_polygeist_frontend.py` | 8 | Command building, stdout/file output, errors, Docker fallback | Fully mocked subprocess |
 | `test_parser_unsupported_form_diagnostics.py` | 4 | Diagnostics for iter_args, conditionals, no loop, no store | Good |
 | `test_parser_corpus_compat.py` | 3 | Corpus counts and classes | Couples to exact corpus contents |
 | `test_weekly_benchmark_report.py` | 2 | Fixture discovery, trend and canonical summaries | |
 | `test_fixture_source_policy.py` | 2 | Greps two test files for inline MLIR | Policy enforced by text search |
 
-## Integration tests (`tests/integration/`, 11 files)
+## Integration tests (`tests/integration/`, 13 files)
 
 | File | Tests | What it covers | Quality notes |
 |---|---|---|---|
-| `test_matmul.py` | 17 | Full pipeline for matmul variants, StableHLO strict path, missing shapes, artifact validation, mixed loops, dynamic dims, iter_args form | Several `if result.success:` vacuous assertions; `test_lift_larger_matmul` failing; mixed step-2 fixture asserted as success |
+| `test_matmul.py` | 17 | Full pipeline for matmul variants, StableHLO strict path, missing shapes, artifact validation, mixed loops, dynamic dims, iter_args form | Several `if result.success:` vacuous assertions; mixed step-2 fixture asserted as success |
 | `test_cli_strict_policy.py` | 16 | Strict/no-verify rejection, exit codes per profile for `lift`, `lift-c`, `demo` | Exit codes checked against mocked lift results |
 | `test_conv2d.py` | 14 | Conv2d simple and NHWC, attribute inference, artifact validation, 1x1 and 5x5 proofs | |
 | `test_cli_batch_report.py` | 13 | Report fields, profiles, selection filters, output layout, trusted-lane validation | Trusted-lane tests mock both lift and verifier discovery |
 | `test_cli_error_messages.py` | 11 | Error and warning text for malformed input | |
 | `test_stablehlo_phase3_ops.py` | 10 | StableHLO transpose, add, subtract, multiply, vecdot, matvec, conv1d, conv2d, reduce sum, reduce max | No artifact validation possible (F-09) |
+| `test_elementwise_lift.py` | 10 | Elementwise kernels proved as the op they compute (mul, relu); mutant kernels (div, negate, scale by constant, add constant, three inputs, mul-add, hex constant) never PROVED | Exact sketch and state asserted |
 | `test_transpose.py` | 8 | 2-D and non-square transpose, permutation, artifact validation | |
 | `test_conv1d.py` | 6 | Conv1d identification and attribute inference | Includes `test_result_has_input_mlir` that is conditional |
 | `test_dot.py` | 6 | Dot products including symbolic N and disagreement metadata | |
@@ -147,7 +148,7 @@ Located at `packages/loophole/conftest.py` (package root, not inside `tests/`). 
 | `test_weekly_benchmark_report.py` | 3 | Report generation and writing | |
 | `test_demo_script_smoke.py` | 2 | `examples/run_demo.py` plain and demo modes with a fixture limit | |
 
-Total: 372 tests (unit 262, integration 110).
+Total: 392 tests (unit 272, integration 120).
 
 ## Fixture directories (`tests/fixtures/`)
 

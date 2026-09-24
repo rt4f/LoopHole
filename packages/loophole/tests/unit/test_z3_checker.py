@@ -2,12 +2,13 @@
 Unit tests for the Z3 equivalence checker.
 Tests both the structural pre-filter and the full SMT check.
 """
+import dataclasses
 from pathlib import Path
 
 import pytest
 from z3.z3 import Int, IntVal, simplify, substitute
 from loophole.affine_extractor import AffineExtractor
-from loophole.sketch_library import SKETCH_BY_NAME
+from loophole.sketch_library import SKETCH_BY_NAME, ComputePayloadType
 from loophole.z3_checker import Z3EquivalenceChecker, CheckResult, structural_match, _eval_index_expr
 from loophole.tests.fixtures import (
     MATMUL_MLIR,
@@ -15,9 +16,19 @@ from loophole.tests.fixtures import (
     DOT_PRODUCT_MLIR,
     DOT_PRODUCT_SYMBOLIC_N_MLIR,
     ELEMENTWISE_ADD_MLIR,
+    ELEMENTWISE_MUL_ADD_MLIR,
+    ELEMENTWISE_MUL_MLIR,
     MATMUL_128_MLIR,
     REDUCE_SUM_MLIR,
+    RELU_MLIR,
+    SCALE_BY_CONSTANT_MLIR,
 )
+
+
+def _with_op_type(info, old, new):
+    """Return a copy of a parsed loop with every `old` compute op renamed to `new`."""
+    ops = [dataclasses.replace(op, op_type=new) if op.op_type == old else op for op in info.compute_ops]
+    return dataclasses.replace(info, compute_ops=ops)
 
 
 @pytest.fixture
@@ -56,6 +67,43 @@ class TestStructuralMatch:
         dot_sketches = [s for n, s in SKETCH_BY_NAME.items() if "dot" in n]
         assert any(structural_match(info, s) for s in dot_sketches), \
             "dot product loop nest should structurally match a dot sketch"
+
+    @pytest.mark.parametrize(
+        "mlir, expected",
+        [(SCALE_BY_CONSTANT_MLIR, True), (ELEMENTWISE_MUL_MLIR, False), (RELU_MLIR, False)],
+        ids=["scale-by-constant", "mul-of-two-loads", "relu"],
+    )
+    def test_scale_sketch_requires_multiply_by_a_non_loaded_value(self, extractor, mlir, expected):
+        info = extractor.extract(mlir)
+        assert structural_match(info, SKETCH_BY_NAME["linalg.map{arith.mulf_scalar}"]) is expected
+
+    @pytest.mark.parametrize(
+        "payload, op_type, expected",
+        [
+            (ComputePayloadType.NEGATE, "negf", True),
+            (ComputePayloadType.NEGATE, "maxf", False),
+            (ComputePayloadType.MAX, "maxf", True),
+            (ComputePayloadType.MAX, "negf", False),
+            (ComputePayloadType.MIN, "minf", True),
+            (ComputePayloadType.MIN, "maxf", False),
+        ],
+    )
+    def test_negate_max_min_payloads_require_their_op(self, extractor, payload, op_type, expected):
+        # No library sketch uses these payloads yet, so a synthetic one exercises the rule.
+        info = _with_op_type(extractor.extract(RELU_MLIR), "maxf", op_type)
+        sketch = dataclasses.replace(SKETCH_BY_NAME["linalg.copy"], compute_payload=payload)
+        assert structural_match(info, sketch) is expected
+
+
+class TestComputePayloadModelling:
+    def test_unsupported_op_combination_is_reported_as_encode_error(self, extractor, checker):
+        # {subf, addf}: every op is known, but no payload models the combination.
+        info = _with_op_type(extractor.extract(ELEMENTWISE_MUL_ADD_MLIR), "mulf", "subf")
+        report = checker.check(info, SKETCH_BY_NAME["linalg.map{arith.addf}"])
+
+        assert report.result == CheckResult.ENCODE_ERROR
+        assert "unsupported_form=unmodelled_compute_payload" in report.notes, report.notes
+        assert "reason=unsupported_op_combination" in report.notes, report.notes
 
 
 class TestZ3Verification:
